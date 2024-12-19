@@ -1,0 +1,16 @@
+# Beleg
+	- IPv6: Multicast adress usage
+	- packet strucuture( sizing, sequenzing)
+	- reliability check via:
+		- PacketNr list
+			- comapare expected = received
+		- Acknolodgment system
+			- timout = negatie Ack Frame
+				- client calls for responding PacketNr
+				- server listens for calls
+	- File Handling:
+		- Read/Write Sequenzed
+	- Slideing Window:
+		- Move forward if Timer expire + no NACK
+		- Transmission ended Packet
+	-
