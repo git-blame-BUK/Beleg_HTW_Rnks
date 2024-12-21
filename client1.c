@@ -7,10 +7,25 @@
 #include <netinet/in.h>
 #include <unistd.h>
 
+#include "packet.h"
+
+Packet decode_packet(const char *encoded) {
+    Packet packet;
+    int sequence_number;
+    char data[MAX_LINE_LEN];
+
+    int parsed = sscanf(encoded, "%d|%1023[^\"]", &sequence_number, data);
+
+    packet.sequence_number = sequence_number;
+    strncpy(packet.data, data, MAX_LINE_LEN);
+    packet.data[MAX_LINE_LEN - 1] = '\0'; // Ensure null termination
+
+    return packet; // Success
+}
 
 int main(){
 //msg buffer
-char buffer[50] = {0};
+char buffer[MAX_LINE_LEN + 32] = {0};
 struct sockaddr_in serveraddr = {0};
 // server socket
 int sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -36,7 +51,8 @@ socklen_t len = 0;
 
 int n = recvfrom(sock, (char *)buffer, 50, MSG_WAITALL, 0, &len);
 buffer[n] = '\n';
-printf("%s",buffer);
+Packet packet = decode_packet(buffer);
+printf("%d--|--%s",packet.sequence_number, packet.data);
 close(sock);
 
 
