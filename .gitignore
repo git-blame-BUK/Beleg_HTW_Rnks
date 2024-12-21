@@ -1,0 +1,7 @@
+# Ignore all files
+*
+
+# Ignore .dSYM directories
+*.dSYM
+# Whitelist files with extensions
+!*.*
