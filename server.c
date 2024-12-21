@@ -9,6 +9,11 @@
 
 #include "packet.h"
 
+struct NACK{
+    int Seqnr;
+    int sender_Adresse;
+    int Timestamp;
+};
 
 char* encode_packet(Packet *packet) {
     char* buffer = (char*)malloc(MAX_LINE_LEN + 32); // Allocate memory for each packet
