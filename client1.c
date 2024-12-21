@@ -100,6 +100,10 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
+    /*
+    Test Commit to show the difference between the original and the modified code
+    */
+
     int packet_count = 0;
     Packet* packet_list = receive_and_decode_packets(sock, &serveraddr, &packet_count);
 
