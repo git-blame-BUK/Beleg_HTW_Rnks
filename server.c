@@ -6,7 +6,9 @@
 #include <unistd.h>
 #include <netinet/in.h>
 #include <sys/types.h>
-
+#include <errno.h>
+#include <sys/time.h>
+//TODO NACK as package
 #include "packet.h"
 
 struct NACK{
@@ -14,6 +16,32 @@ struct NACK{
     int sender_Adresse;
     int Timestamp;
 };
+
+int NACK_Receiver_FKT(int sock, struct sockaddr_in *serveraddr, struct NACK *nack) {
+    char buffer[1024] = {0};
+    socklen_t addr_len = sizeof(*serveraddr);
+
+    // NACK empfangen
+    int len = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr *)serveraddr, &addr_len);
+    if (len == -1) {
+        if (errno == EWOULDBLOCK || errno == EAGAIN) {
+            printf("Timeout: Kein NACK empfangen\n");
+        } else {
+            perror("Fehler beim Empfang");
+        }
+        return -1;
+    }
+
+    // Parse die empfangenen Daten in die NACK-Struktur
+    if (len >= sizeof(struct NACK)) {
+        memcpy(nack, buffer, sizeof(struct NACK));
+        return 0; // Erfolgreich
+    } 
+    else {
+        fprintf(stderr, "Fehler: Ungültige NACK-Daten empfangen\n");
+        return -1;
+    }
+}
 
 char* encode_packet(Packet *packet) {
     char* buffer = (char*)malloc(MAX_LINE_LEN + 32); // Allocate memory for each packet
@@ -89,12 +117,41 @@ int main(void) {
     serveraddr.sin_port = htons(40400);
     serveraddr.sin_addr.s_addr = INADDR_ANY;
 
-    send_packets(sock, packetlist, len, serveraddr);
+    //timout setzen
+    
 
+
+    while (1){
+        int a = 10; //send schleife TODO a = laene Paket array
+        int b = 0;
+        for (b=0; b < a; b++) {
+            send_packets(sock, packetlist, len, serveraddr);
+        }
+        struct timeval tv = {2, 0}; //reset für sock nach 2 sekunden falls kein NACK)
+        if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+            perror("Fehler beim Setzen des Timeouts");
+            close(sock);
+            exit(EXIT_FAILURE);
+        }
+            //TODO: END FRAME
+        
+            //NACK receiver
+            
+        struct NACK nack;
+        for (int i = 0; i < 5; i++) { // Maximal 10 Sekunden
+            if (NACK_Receiver_FKT(sock, &serveraddr, &nack) == 0) {
+                printf("NACK empfangen:\nSEQ: %d, Sender: %d, Timestamp: %d\n",
+                nack.Seqnr, nack.sender_Adresse, nack.Timestamp);
+                break; // Erfolgreich, Schleife beenden
+            }
+
+
+        }   
+
+        
+
+    
+    }
     close(sock);
 }
-
-
-
-
 
