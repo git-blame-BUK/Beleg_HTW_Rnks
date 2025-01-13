@@ -8,16 +8,10 @@
 #include <sys/types.h>
 #include <errno.h>
 #include <sys/time.h>
-//TODO NACK as package
 #include "packet.h"
+#include "nack.h"
 
-struct NACK{
-    int Seqnr;
-    int sender_Adresse;
-    int Timestamp;
-};
-
-int NACK_Receiver_FKT(int sock, struct sockaddr_in *serveraddr, struct NACK *nack) {
+int NACK_Receiver_FKT(int sock, struct sockaddr_in *serveraddr, NACK *nack) {
     char buffer[1024] = {0};
     socklen_t addr_len = sizeof(*serveraddr);
 
@@ -33,8 +27,8 @@ int NACK_Receiver_FKT(int sock, struct sockaddr_in *serveraddr, struct NACK *nac
     }
 
     // Parse die empfangenen Daten in die NACK-Struktur
-    if (len >= sizeof(struct NACK)) {
-        memcpy(nack, buffer, sizeof(struct NACK));
+    if (len >= sizeof(NACK)) {
+        memcpy(nack, buffer, sizeof(NACK));
         return 0; // Erfolgreich
     } 
     else {
@@ -137,7 +131,7 @@ int main(void) {
         
             //NACK receiver
             
-        struct NACK nack;
+        NACK nack;
         for (int i = 0; i < 5; i++) { // Maximal 10 Sekunden
             if (NACK_Receiver_FKT(sock, &serveraddr, &nack) == 0) {
                 printf("NACK empfangen:\nSEQ: %d, Sender: %d, Timestamp: %d\n",
