@@ -37,6 +37,9 @@ int NACK_Receiver_FKT(int sock, struct sockaddr_in *serveraddr, NACK *nack) {
     }
 }
 
+
+
+
 char* encode_packet(Packet *packet) {
     char* buffer = (char*)malloc(MAX_LINE_LEN + 32); // Allocate memory for each packet
     if (buffer == NULL) {
@@ -46,6 +49,7 @@ char* encode_packet(Packet *packet) {
     snprintf(buffer, MAX_LINE_LEN + 32, "%d|%s", packet->sequence_number, packet->data);
     return buffer;
 }
+
 
 char** create_encoded_array(Packet* packetlist, int len) {
     char** encoded_array = (char**)malloc(len * sizeof(char*));
@@ -70,6 +74,8 @@ char** create_encoded_array(Packet* packetlist, int len) {
     return encoded_array;
 }
 
+
+
 // Usage example
 void send_packets(int sock, Packet* packetlist, int len, struct sockaddr_in serveraddr) {
     char** encoded_array = create_encoded_array(packetlist, len);
@@ -88,62 +94,98 @@ void send_packets(int sock, Packet* packetlist, int len, struct sockaddr_in serv
     free(encoded_array);
 }
 
+void handle_nack(int sock, NACK *nack, Packet *packetlist, int packet_count, struct sockaddr_in *clientaddr) {
+    int seqnr = nack->Seqnr;  // Fehlende Sequenznummer aus dem NACK
+    if (seqnr < 0 || seqnr >= packet_count) {
+        printf("Ungültige Sequenznummer im NACK: %d\n", seqnr);
+        return;
+    }
+    printf("NACK empfangen für Paket %d\n", seqnr);
+
+    for (int i = 0; i < packet_count; i++) {
+        if (packetlist[i].sequence_number == seqnr) {
+            // Paket erneut senden
+            char *encoded_packet = encode_packet(&packetlist[i]);
+            if (encoded_packet) {
+                int sent_len = sendto(sock, encoded_packet, strlen(encoded_packet), 0,
+                                      (struct sockaddr *)clientaddr, sizeof(*clientaddr));
+                if (sent_len == -1) {
+                    perror("Fehler beim erneuten Senden des Pakets");
+                } else {
+                    printf("Paket %d erneut gesendet\n", seqnr);
+                }
+                free(encoded_packet);
+            }
+            return;
+        }
+    }
+
+    // Wenn Paket nicht gefunden wurde
+    printf("Paket %d konnte nicht gefunden werden\n", seqnr);
+}
+
 int main(void) {
-    // Packetlist
-    Packet packetlist[1];
-    int len = sizeof(packetlist) / sizeof(packetlist[0]);
-    //test msg
-    Packet packet_for_list;
-    packet_for_list.sequence_number = 1;
-    strcpy(packet_for_list.data, "hallo hier ist der server ");
-    packetlist[0] = packet_for_list;
-   
-    struct sockaddr_in serveraddr = {0};
+    struct sockaddr_in serveraddr = {0}, clientaddr = {0};
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    
-    //Socket error meldung
-    if (sock == -1){ 
-        perror("Fehler beim erstellen des Sockets");
+    if (sock == -1) {
+        perror("Fehler beim Erstellen des Sockets");
         exit(EXIT_FAILURE);
     }
 
-    serveraddr.sin_family = AF_INET;  //IPV4
+    serveraddr.sin_family = AF_INET;
     serveraddr.sin_port = htons(40400);
     serveraddr.sin_addr.s_addr = INADDR_ANY;
 
-
-
-
-    while (1){
-        int a = 10; //send schleife TODO a = laene Paket array
-        int b = 0;
-        for (b=0; b < a; b++) {
-            send_packets(sock, packetlist, len, serveraddr);
-        }
-        struct timeval tv = {2, 0}; //reset für sock nach 2 sekunden falls kein NACK)
-        if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
-            perror("Fehler beim Setzen des Timeouts");
-            close(sock);
-            exit(EXIT_FAILURE);
-        }
-            //TODO: END FRAME
-        
-        //NACK receiver
-        NACK nack;
-        for (int i = 0; i < 5; i++) { // Maximal 10 Sekunden
-            if (NACK_Receiver_FKT(sock, &serveraddr, &nack) == 0) {
-                printf("NACK empfangen:\nSEQ: %d, Sender: %d, Timestamp: %d\n",
-                nack.Seqnr, nack.sender_Adresse, nack.Timestamp);
-                break; // Erfolgreich, Schleife beenden
-            }
-
-
-        }   
-
-        
-
-    
+    if (bind(sock, (struct sockaddr *)&serveraddr, sizeof(serveraddr)) == -1) {
+        perror("Fehler beim Binden des Sockets");
+        close(sock);
+        exit(EXIT_FAILURE);
     }
-    close(sock);
-}
 
+    // Zieladresse (Client) setzen
+    clientaddr.sin_family = AF_INET;
+    clientaddr.sin_port = htons(40401); // Zielport
+    clientaddr.sin_addr.s_addr = inet_addr("127.0.0.1"); // Ziel-IP (localhost)
+
+    // Pakete definieren
+    Packet packetlist[10];
+    int packet_count = sizeof(packetlist) / sizeof(packetlist[0]);
+    // Simulierte Pakete initialisieren
+    for (int i = 0; i < packet_count; i++) {
+        packetlist[i].sequence_number = i;
+        snprintf(packetlist[i].data, MAX_LINE_LEN, "Simulierte Daten für Paket %d", i);
+    }
+   
+   
+   
+   // for (int i = 0; i < packet_count; i++) {
+   //     packetlist[i].sequence_number = i;
+   //     snprintf(packetlist[i].data, MAX_LINE_LEN, "Daten für Paket %d", i);
+   // }
+
+    // Pakete senden
+    send_packets(sock, packetlist, packet_count, clientaddr);
+
+    // Timeout für NACK-Empfang setzen
+    struct timeval tv = {10, 0};
+    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        perror("Fehler beim Setzen des Timeouts");
+        close(sock);
+        exit(EXIT_FAILURE);
+    }
+
+    // NACK-Handling
+    while (1) {
+        NACK nack;
+        int nack_result = NACK_Receiver_FKT(sock, &clientaddr, &nack);
+        if (nack_result == 0) {
+            handle_nack(sock, &nack, packetlist, packet_count, &clientaddr);
+        } else if (nack_result == -1) {
+            printf("Keine NACK-Nachricht empfangen (Timeout oder Fehler)\n");
+            break;
+        }
+    }
+
+    close(sock);
+    return 0;
+}

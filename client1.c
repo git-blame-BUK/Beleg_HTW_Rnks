@@ -11,7 +11,7 @@
 #include "packet.h"
 #include "nack.h"
 
-#define MAX_PACKETS 1
+#define MAX_PACKETS 10
 #define MAX_LINE_LEN 1024
 
 /**
@@ -118,7 +118,7 @@ int main() {
     }
 
     serveraddr.sin_family      = AF_INET;
-    serveraddr.sin_port        = htons(40400);
+    serveraddr.sin_port        = htons(40401);
     serveraddr.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(sock, (const struct sockaddr *)&serveraddr, sizeof(serveraddr)) == -1) {
