@@ -9,6 +9,47 @@
 
 #include "packet.h"
 
+int read_file(const char* filename, Packet** packets_out) {
+    //open file
+    FILE* file = fopen(filename, "r");
+    if (file == NULL) {
+        perror("Fehler beim Öffnen der Datei");
+        exit(EXIT_FAILURE);
+    }
+    
+    int counter = 0;
+    int max_packet = 10;
+
+    //make paketlist 
+    Packet* packets = malloc(max_packet * sizeof(Packet));
+    if (packets == NULL) {
+        perror("Fehler beim Allokieren von Speicher für die Paketliste.");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    //reading each line of the file
+    char line[MAX_LINE_LEN];
+    while (fgets(line, MAX_LINE_LEN, file) != NULL) {
+        //maximum size reached
+        if (counter == max_packet) {
+        printf("Maximale Anzahl von Paketen erreicht.");
+        break;
+        }
+
+        // Parse line in correct format: "<seqnr>|<data>")
+        if(sscanf(line, "%d|%1023[^\n]", &packets[counter].sequence_number, packets[counter].data) != 2) {
+            fprintf(stderr, "Fehler beim Parsen der Zeile %d: %s\n", counter, line);
+            continue;
+        }
+        counter++;
+    }
+    fclose(file);
+
+    *packets_out = packets;
+    return counter;
+}
+
 
 char* encode_packet(Packet *packet) {
     char* buffer = (char*)malloc(MAX_LINE_LEN + 32); // Allocate memory for each packet
@@ -71,9 +112,22 @@ int main(void) {
     strcpy(packet_for_list.data, "hallo hier ist der client");
     packetlist[0] = packet_for_list;
    
+    
+
+    //loading paketlist
+    Packet* packet_list = NULL;
+    int packet_count = read_file("pakete.txt", &packet_list);
+    if (packet_count < 0) {
+        close(sock);
+        exit(EXIT_FAILURE);
+    }
+    for (int i = 0; i < packet_count; i++) {
+        printf("  Packet[%d]: seq = %d, data = %s\n",
+            i, packet_list[i].sequence_number, packet_list[i].data); }
+
     struct sockaddr_in serveraddr = {0};
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    
+
     //Socket error meldung
     if (sock == -1){ 
         perror("Fehler beim erstellen des Sockets");
@@ -84,7 +138,9 @@ int main(void) {
     serveraddr.sin_port = htons(40400);
     serveraddr.sin_addr.s_addr = INADDR_ANY;
 
-    send_packets(sock, packetlist, len, serveraddr);
+    send_packets(sock, packet_list, packet_count, serveraddr);
+
+    free(packet_list);
 
     close(sock);
 }
