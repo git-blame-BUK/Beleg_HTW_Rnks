@@ -95,7 +95,7 @@ int main(void) {
     //test msg
     Packet packet_for_list;
     packet_for_list.sequence_number = 1;
-    strcpy(packet_for_list.data, "hallo hier ist der client");
+    strcpy(packet_for_list.data, "hallo hier ist der server ");
     packetlist[0] = packet_for_list;
    
     struct sockaddr_in serveraddr = {0};
@@ -111,8 +111,7 @@ int main(void) {
     serveraddr.sin_port = htons(40400);
     serveraddr.sin_addr.s_addr = INADDR_ANY;
 
-    //timout setzen
-    
+
 
 
     while (1){
@@ -129,8 +128,7 @@ int main(void) {
         }
             //TODO: END FRAME
         
-            //NACK receiver
-            
+        //NACK receiver
         NACK nack;
         for (int i = 0; i < 5; i++) { // Maximal 10 Sekunden
             if (NACK_Receiver_FKT(sock, &serveraddr, &nack) == 0) {
