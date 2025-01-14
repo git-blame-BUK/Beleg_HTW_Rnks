@@ -7,10 +7,11 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <errno.h>
-
+#include <sys/time.h>
 #include "packet.h"
+#include "nack.h"
 
-#define MAX_PACKETS 1
+#define MAX_PACKETS 10
 #define MAX_LINE_LEN 1024
 
 /**
@@ -80,6 +81,32 @@ Packet* receive_and_decode_packets(int sock, struct sockaddr_in* serveraddr, int
     return packets;
 }
 
+//Missing Packet check
+
+void check_missing_packets(Packet *packets, int received_count, int expected_count, int sock, struct sockaddr_in *serveraddr) {
+    for (int i = 0; i < expected_count; i++) {
+        int found = 0;
+        for (int j = 0; j < received_count; j++) {
+            if (packets[j].sequence_number == i) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            printf("Fehlendes Paket: %d\n", i);
+            NACK nack = {0};
+            nack.Seqnr = i;
+            nack.sender_Adresse = 1234;  // Beispiel-Senderadresse
+            nack.Timestamp = (int)time(NULL);
+
+            sendto(sock, &nack, sizeof(NACK), 0, (struct sockaddr *)serveraddr, sizeof(*serveraddr));
+            printf("NACK für Paket %d gesendet\n", i);
+        }
+    }
+}
+
+
+
 int main() {
     struct sockaddr_in serveraddr;
     memset(&serveraddr, 0, sizeof(serveraddr));
@@ -91,7 +118,7 @@ int main() {
     }
 
     serveraddr.sin_family      = AF_INET;
-    serveraddr.sin_port        = htons(40400);
+    serveraddr.sin_port        = htons(40401);
     serveraddr.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(sock, (const struct sockaddr *)&serveraddr, sizeof(serveraddr)) == -1) {
@@ -108,6 +135,8 @@ int main() {
         printf("  Packet[%d]: seq = %d, data = %s\n",
                i, packet_list[i].sequence_number, packet_list[i].data);
     }
+    int expected_count = 10;
+    check_missing_packets( packet_list, packet_count, expected_count, sock, &serveraddr);
 
     free(packet_list);
     close(sock);
