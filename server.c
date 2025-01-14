@@ -59,6 +59,10 @@ int read_file(const char* filename, Packet** packets_out) {
     //reading each line of the file
     char line[MAX_LINE_LEN];
     while (fgets(line, MAX_LINE_LEN, file) != NULL) {
+        char* newline_pos = strchr(line, '\n');
+        if (newline_pos) {
+            *newline_pos = '\0';
+        }
         //maximum size reached
         if (counter == max_packet) {
             printf("Maximale Anzahl von Paketen erreicht.");
@@ -66,10 +70,12 @@ int read_file(const char* filename, Packet** packets_out) {
         }
 
         // Parse line in correct format: "<seqnr>|<data>")
-        if (sscanf(line, "%d|%1023[^\n]", &packets[counter].sequence_number, packets[counter].data) != 2) {
-            fprintf(stderr, "Fehler beim Parsen der Zeile %d: %s\n", counter, line);
-            continue;
-        }
+        packets[counter].sequence_number = counter; // automatic sequenznumber
+        strncpy(packets[counter].data, line, MAX_LINE_LEN - 1); 
+        packets[counter].data[MAX_LINE_LEN - 1] = '\0'; 
+
+        printf("Gelesene Zeile: seq=%d, data=%s\n", packets[counter].sequence_number, packets[counter].data);
+
         counter++;
     }
     fclose(file);
@@ -195,7 +201,7 @@ int main(void) {
         exit(EXIT_FAILURE);
     }
     for (int i = 0; i < packet_count; i++) {
-        snprintf("  Packet[%d]: seq = %d, data = %s\n",
+        printf("  Packet[%d]: seq = %d, data = %s\n",
             i, packetlist[i].sequence_number, packetlist[i].data);
     }
    
