@@ -37,6 +37,52 @@ int NACK_Receiver_FKT(int sock, struct sockaddr_in *serveraddr, NACK *nack) {
     }
 }
 
+int read_file(const char* filename, Packet** packets_out) {
+    //open file
+    FILE* file = fopen(filename, "r");
+    if (file == NULL) {
+        perror("Fehler beim Öffnen der Datei");
+        exit(EXIT_FAILURE);
+    }
+
+    int counter = 0;
+    int max_packet = 10;
+
+    //make paketlist 
+    Packet* packets = malloc(max_packet * sizeof(Packet));
+    if (packets == NULL) {
+        perror("Fehler beim Allokieren von Speicher für die Paketliste.");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    //reading each line of the file
+    char line[MAX_LINE_LEN];
+    while (fgets(line, MAX_LINE_LEN, file) != NULL) {
+        char* newline_pos = strchr(line, '\n');
+        if (newline_pos) {
+            *newline_pos = '\0';
+        }
+        //maximum size reached
+        if (counter == max_packet) {
+            printf("Maximale Anzahl von Paketen erreicht.");
+            break;
+        }
+
+        // Parse line in correct format: "<seqnr>|<data>")
+        packets[counter].sequence_number = counter; // automatic sequenznumber
+        strncpy(packets[counter].data, line, MAX_LINE_LEN - 1); 
+        packets[counter].data[MAX_LINE_LEN - 1] = '\0'; 
+
+        printf("Gelesene Zeile: seq=%d, data=%s\n", packets[counter].sequence_number, packets[counter].data);
+
+        counter++;
+    }
+    fclose(file);
+
+    *packets_out = packets;
+    return counter;
+}
 
 
 
@@ -148,12 +194,15 @@ int main(void) {
     clientaddr.sin_addr.s_addr = inet_addr("127.0.0.1"); // Ziel-IP (localhost)
 
     // Pakete definieren
-    Packet packetlist[10];
-    int packet_count = sizeof(packetlist) / sizeof(packetlist[0]);
-    // Simulierte Pakete initialisieren
+    Packet* packetlist = NULL;
+    int packet_count = read_file("pakete.txt", &packetlist);
+    if (packet_count < 0) {
+        close(sock);
+        exit(EXIT_FAILURE);
+    }
     for (int i = 0; i < packet_count; i++) {
-        packetlist[i].sequence_number = i;
-        snprintf(packetlist[i].data, MAX_LINE_LEN, "Simulierte Daten für Paket %d", i);
+        printf("  Packet[%d]: seq = %d, data = %s\n",
+            i, packetlist[i].sequence_number, packetlist[i].data);
     }
    
    
