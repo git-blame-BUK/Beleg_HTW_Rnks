@@ -74,7 +74,7 @@ Packet* receive_and_decode_packets(int sock, struct sockaddr_in* serveraddr, int
         buffer[n] = '\0';
         // Simuliere das Ignorieren eines bestimmten Pakets (z. B. Sequenznummer 5)
         Packet received_packet = decode_packet(buffer);
-        if (received_packet.sequence_number == 5) {
+        if (received_packet.sequence_number == 5 || received_packet.sequence_number == 7) {
             printf("Paket %d wird ignoriert (Simulation eines Fehlers)\n", received_packet.sequence_number);
             continue; // Überspringe das Speichern dieses Pakets
         }
