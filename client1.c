@@ -194,7 +194,7 @@ int main() {
         close(sock);
         exit(EXIT_FAILURE);
     }
-    struct timeval tv = {5, 0}; // 2 Sekunden Timeout
+    struct timeval tv = {5, 0}; // 5 Sekunden Timeout
     if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
         perror("Fehler beim Setzen des Timeouts");
         close(sock);
