@@ -11,6 +11,36 @@
 #include "packet.h"
 #include "nack.h"
 
+void wait_for_hello_message(int hello_sock, struct sockaddr_in *clientaddr) {
+    socklen_t addr_len = sizeof(*clientaddr);
+    char buffer[1024] = {0};
+
+    printf("Warte auf Hallo-Nachricht vom Client...\n");
+
+    while (1) {
+        int len = recvfrom(hello_sock, buffer, sizeof(buffer) - 1, 0, (struct sockaddr *)clientaddr, &addr_len);
+        if (len < 0) {
+            perror("Fehler beim Empfang der Hallo-Nachricht");
+            continue;
+        }
+        buffer[len] = '\0';
+
+        if (strcmp(buffer, "Hallo") == 0) {
+            printf("Hallo-Nachricht vom Client empfangen\n");
+
+            // Antwort senden
+            const char *reply = "Hallo zurück";
+            if (sendto(hello_sock, reply, strlen(reply), 0, (struct sockaddr *)clientaddr, addr_len) < 0) {
+                perror("Fehler beim Senden der Hallo-Antwort");
+            } else {
+                printf("Antwort gesendet: %s\n", reply);
+            }
+            break;
+        }
+    }
+}
+
+
 int NACK_Receiver_FKT(int sock, struct sockaddr_in *serveraddr, NACK *nack) {
     char buffer[1024] = {0};
     socklen_t addr_len = sizeof(*serveraddr);
@@ -187,7 +217,7 @@ int main(void) {
         close(sock);
         exit(EXIT_FAILURE);
     }
-
+    
     // Zieladresse (Client) setzen
     clientaddr.sin_family = AF_INET;
     clientaddr.sin_port = htons(40401); // Zielport
@@ -206,11 +236,14 @@ int main(void) {
     }
    
    
-   
+    // Warten auf die initiale "Hallo"-Nachricht vom Client
+    wait_for_hello_message(sock, &clientaddr);
    // for (int i = 0; i < packet_count; i++) {
    //     packetlist[i].sequence_number = i;
    //     snprintf(packetlist[i].data, MAX_LINE_LEN, "Daten für Paket %d", i);
    // }
+    // Kurze Verzögerung vor dem Senden der Pakete
+    usleep(100000); // 100 ms
 
     // Pakete senden
     send_packets(sock, packetlist, packet_count, clientaddr);

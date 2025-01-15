@@ -14,6 +14,34 @@
 #define MAX_PACKETS 10
 #define MAX_LINE_LEN 1024
 
+void send_hello_message(int sock, struct sockaddr_in *serveraddr) {
+    const char *hello_msg = "Hallo";
+    char buffer[1024] = {0};
+    socklen_t addr_len = sizeof(*serveraddr);
+
+    // "Hallo"-Nachricht senden
+    if (sendto(sock, hello_msg, strlen(hello_msg), 0, (struct sockaddr *)serveraddr, addr_len) < 0) {
+        perror("Fehler beim Senden der Hallo-Nachricht");
+        exit(EXIT_FAILURE);
+    }
+    printf("Hallo-Nachricht gesendet\n");
+
+    // Auf Antwort warten
+    int len = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, (struct sockaddr *)serveraddr, &addr_len);
+    if (len < 0) {
+        perror("Fehler beim Empfang der Hallo-Antwort");
+        exit(EXIT_FAILURE);
+    }
+    buffer[len] = '\0';
+    printf("Antwort vom Server: %s\n", buffer);
+
+    if (strcmp(buffer, "Hallo zurück") != 0) {
+        fprintf(stderr, "Unerwartete Antwort vom Server: %s\n", buffer);
+        exit(EXIT_FAILURE);
+    }
+}
+
+
 /**
  * Decodes a single, encoded packet string (e.g. "5|Hello").
  */
@@ -186,14 +214,20 @@ int main() {
     }
 
     serveraddr.sin_family      = AF_INET;
-    serveraddr.sin_port        = htons(40401);
-    serveraddr.sin_addr.s_addr = INADDR_ANY;
+    serveraddr.sin_port        = htons(40400);
+    serveraddr.sin_addr.s_addr = inet_addr("127.0.0.1"); // Server-IP (localhost)
 
-    if (bind(sock, (const struct sockaddr *)&serveraddr, sizeof(serveraddr)) == -1) {
-        perror("socket konnte nicht gebunden werden");
-        close(sock);
-        exit(EXIT_FAILURE);
-    }
+    
+    //if (bind(sock, (const struct sockaddr *)&serveraddr, sizeof(serveraddr)) == -1) {
+      //  perror("socket konnte nicht gebunden werden");
+        //close(sock);
+        //exit(EXIT_FAILURE);
+    //}
+    
+    
+    // Handshake mit dem Server
+    send_hello_message(sock, &serveraddr);
+
     struct timeval tv = {5, 0}; // 5 Sekunden Timeout
     if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
         perror("Fehler beim Setzen des Timeouts");
