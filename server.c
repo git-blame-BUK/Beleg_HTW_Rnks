@@ -52,6 +52,8 @@ int NACK_Receiver_FKT(int sock, struct sockaddr_in6 *clientaddr, NACK *nack) {
 
     // NACK empfangen
     int len = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr *)clientaddr, &addr_len);
+    
+    printf("Empfangene Daten (Länge: %d): %.*s\n", len, len, buffer);
     if (len == -1) {
         if (errno == EWOULDBLOCK || errno == EAGAIN) {
             printf("Timeout: Kein NACK empfangen\n");
@@ -60,6 +62,8 @@ int NACK_Receiver_FKT(int sock, struct sockaddr_in6 *clientaddr, NACK *nack) {
         }
         return -1;
     }
+    
+
 
     // Parse die empfangenen Daten in die NACK-Struktur
     if (len >= sizeof(NACK)) {
@@ -227,24 +231,33 @@ void handle_nack(int sock, NACK *nack, Packet *packetlist, int packet_count, str
 
 int main(void) {
     struct sockaddr_in6 serveraddr = {0}, clientaddr = {0}, multicastaddr = {0};
-    int sock = socket(AF_INET6, SOCK_DGRAM, 0);
+    int sock;
+
+    // Socket erstellen
+    sock = socket(AF_INET6, SOCK_DGRAM, 0);
     if (sock == -1) {
         perror("Fehler beim Erstellen des Sockets");
         exit(EXIT_FAILURE);
     }
+    printf("Server-Socket erfolgreich erstellt.\n");
 
+    // Serveradresse konfigurieren
     serveraddr.sin6_family = AF_INET6;
     serveraddr.sin6_port = htons(MULTICAST_PORT);
     serveraddr.sin6_addr = in6addr_any;
 
-
+    // Server an Adresse binden
     if (bind(sock, (struct sockaddr *)&serveraddr, sizeof(serveraddr)) == -1) {
         perror("Fehler beim Binden des Sockets");
         close(sock);
         exit(EXIT_FAILURE);
     }
+    printf("Server erfolgreich an Port %d gebunden.\n", MULTICAST_PORT);
+
+    // Multicast-Gruppe beitreten
     setup_multicast_group(sock);
-    // Zieladresse (Client) setzen
+
+    // Zieladresse (Multicast) konfigurieren
     multicastaddr.sin6_family = AF_INET6;
     multicastaddr.sin6_port = htons(MULTICAST_PORT);
     if (inet_pton(AF_INET6, MULTICAST_ADDR, &multicastaddr.sin6_addr) != 1) {
@@ -252,27 +265,21 @@ int main(void) {
         close(sock);
         exit(EXIT_FAILURE);
     }
-
-    // Setze die Scope-ID (Interface, z. B. "en0" für Wi-Fi)
-    multicastaddr.sin6_scope_id = if_nametoindex("lo0"); // Ersetzen Sie "en0" durch Ihr Interface
+    multicastaddr.sin6_scope_id = if_nametoindex("lo0"); // Interface-ID für Loopback
     if (multicastaddr.sin6_scope_id == 0) {
         perror("Fehler beim Ermitteln der Interface-ID");
         close(sock);
         exit(EXIT_FAILURE);
     }
-    unsigned int loop = 1;
+
+    // Multicast-Loopback deaktivieren
+    unsigned int loop = 0;
     if (setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &loop, sizeof(loop)) < 0) {
-        perror("Fehler beim Aktivieren des Multicast-Loopback");
-    }
-    unsigned int hop_limit = 64;
-    if (setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &hop_limit, sizeof(hop_limit)) < 0) {
-        perror("Fehler beim Setzen des Hop Limits");
+        perror("Fehler beim Deaktivieren des Multicast-Loopbacks");
     }
 
-
-
-    // Pakete definieren
-    Packet* packetlist = NULL;
+    // Pakete lesen
+    Packet *packetlist = NULL;
     int packet_count = read_file("pakete.txt", &packetlist);
     if (packet_count < 0) {
         close(sock);
@@ -280,21 +287,18 @@ int main(void) {
     }
     for (int i = 0; i < packet_count; i++) {
         printf("  Packet[%d]: seq = %d, data = %s\n",
-            i, packetlist[i].sequence_number, packetlist[i].data);
+               i, packetlist[i].sequence_number, packetlist[i].data);
     }
-   
-   
-    // Warten auf die initiale "Hallo"-Nachricht vom Client
+
+    usleep(1500000);
+
+    // Warten auf Hallo-Nachricht vom Client
     wait_for_hello_message(sock, &clientaddr);
-   // for (int i = 0; i < packet_count; i++) {
-   //     packetlist[i].sequence_number = i;
-   //     snprintf(packetlist[i].data, MAX_LINE_LEN, "Daten für Paket %d", i);
-   // }
-    // Kurze Verzögerung vor dem Senden der Pakete
-    usleep(1900000); // 100 ms
 
     // Pakete senden
+    printf("Sende Pakete an die Multicast-Gruppe...\n");
     send_packets(sock, packetlist, packet_count, &multicastaddr);
+
     // Timeout für NACK-Empfang setzen
     struct timeval tv = {10, 0};
     if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
@@ -316,6 +320,7 @@ int main(void) {
     }
 
     close(sock);
+    free(packetlist);
+    printf("Server beendet.\n");
     return 0;
-    
 }

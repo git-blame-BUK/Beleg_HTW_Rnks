@@ -77,44 +77,33 @@ Packet decode_packet(const char *encoded) {
  * @param out_count Output pointer where the number of received packets is stored
  * @return Pointer to a heap-allocated array of Packet. Caller must free().
  */
-Packet* receive_and_decode_packets(int sock, struct sockaddr_in6* serveraddr, int* out_count) {
+Packet* receive_and_decode_packets(int sock, int* out_count) {
     Packet* packets = (Packet*)malloc(sizeof(Packet) * MAX_PACKETS);
     if (!packets) {
-        perror("malloc fehlgeschlagen");
+        perror("malloc failed");
         *out_count = 0;
         return NULL;
     }
     memset(packets, 0, sizeof(Packet) * MAX_PACKETS);
 
     int count = 0;
+    struct sockaddr_in6 senderaddr;
+    socklen_t sender_len = sizeof(senderaddr);
+
+    printf("Warte auf Multicast-Pakete...\n");
+
     while (count < MAX_PACKETS) {
         char buffer[MAX_LINE_LEN + 32] = {0};
-        socklen_t server_len = sizeof(*serveraddr);
-
-        // Debugging: Warten auf Paket
-        printf("Warte auf Multicast-Pakete auf Schnittstelle ID: %u, Port: %d...\n",
-               serveraddr->sin6_scope_id, ntohs(serveraddr->sin6_port));
-
-        int n = recvfrom(sock, buffer, sizeof(buffer) - 1, 0,
-                         (struct sockaddr *)serveraddr, &server_len);
-
-        // Debugging: Ergebnis von recvfrom
-        if (n > 0) {
-            buffer[n] = '\0';
-            printf("Empfangenes Paket (Länge %d): %s\n", n, buffer);
-        } else if (n == 0) {
-            printf("Leeres Paket empfangen.\n");
-            break;
-        } else {
+        int n = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, (struct sockaddr *)&senderaddr, &sender_len);
+        if (n < 0) {
             perror("recvfrom fehlgeschlagen");
-            continue;
+            break;
         }
 
-        // Dekodierung und Speicherung des Pakets
-        Packet received_packet = decode_packet(buffer);
-        printf("Dekodiertes Paket: Sequenznummer = %d, Daten = %s\n",
-               received_packet.sequence_number, received_packet.data);
+        buffer[n] = '\0';
+        printf("Empfangenes Paket (Länge %d): %s\n", n, buffer);
 
+        Packet received_packet = decode_packet(buffer);
         packets[count] = received_packet;
         count++;
     }
@@ -122,6 +111,7 @@ Packet* receive_and_decode_packets(int sock, struct sockaddr_in6* serveraddr, in
     *out_count = count;
     return packets;
 }
+
 
 
 //Missing Packet check mit rückgabewert missing count
@@ -213,11 +203,11 @@ void sort_packets(Packet* packets, int packet_count) {
 
 
 int main() {
-    struct sockaddr_in6 serveraddr;
+    struct sockaddr_in6 bindaddr, serveraddr;
     struct ipv6_mreq group;
     int sock;
     int packet_count = 0;
-    Packet* packet_list = NULL;
+    Packet *packet_list = NULL;
 
     // Socket erstellen
     sock = socket(AF_INET6, SOCK_DGRAM, 0);
@@ -227,6 +217,29 @@ int main() {
     }
     printf("Socket erfolgreich erstellt.\n");
 
+    // SO_REUSEADDR setzen
+    int reuse = 1;
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+        perror("Fehler beim Setzen von SO_REUSEADDR");
+        close(sock);
+        exit(EXIT_FAILURE);
+    }
+
+    // Clientadresse für Binding vorbereiten
+    memset(&bindaddr, 0, sizeof(bindaddr));
+    bindaddr.sin6_family = AF_INET6;
+    bindaddr.sin6_addr = in6addr_any;
+    bindaddr.sin6_port = htons(40401); // Anderer Port als Server
+    bindaddr.sin6_scope_id = if_nametoindex("lo0");
+
+    // Client an Adresse binden
+    if (bind(sock, (struct sockaddr *)&bindaddr, sizeof(bindaddr)) < 0) {
+        perror("Fehler beim Binden des Clients an die Schnittstelle");
+        close(sock);
+        exit(EXIT_FAILURE);
+    }
+    printf("Client erfolgreich an Port 40401 und Schnittstelle lo0 gebunden.\n");
+
     // Multicast-Adresse setzen
     if (inet_pton(AF_INET6, MULTICAST_ADDR, &group.ipv6mr_multiaddr) != 1) {
         perror("Ungültige Multicast-Adresse");
@@ -235,7 +248,7 @@ int main() {
     }
     printf("Multicast-Adresse gesetzt: %s\n", MULTICAST_ADDR);
 
-    // Interface-ID für lo0 setzen (oder ein anderes Interface)
+    // Interface-ID für Multicast-Gruppe setzen
     group.ipv6mr_interface = if_nametoindex("lo0");
     if (group.ipv6mr_interface == 0) {
         perror("Fehler beim Ermitteln der Interface-ID");
@@ -252,8 +265,7 @@ int main() {
     }
     printf("Multicast-Gruppe %s auf Interface-ID %u erfolgreich abonniert.\n", MULTICAST_ADDR, group.ipv6mr_interface);
 
-
-    // Scope-ID und andere Parameter setzen
+    // Scope-ID und Serveradresse konfigurieren
     memset(&serveraddr, 0, sizeof(serveraddr));
     serveraddr.sin6_family = AF_INET6;
     serveraddr.sin6_port = htons(MULTICAST_PORT);
@@ -262,18 +274,17 @@ int main() {
         close(sock);
         exit(EXIT_FAILURE);
     }
-    serveraddr.sin6_scope_id = if_nametoindex("lo0");
-    printf("Client Scope-ID: %u\n", if_nametoindex("lo0"));
+    serveraddr.sin6_scope_id = group.ipv6mr_interface;
+    printf("Client Scope-ID: %u\n", group.ipv6mr_interface);
 
-
-    // Multicast-Loopback aktivieren
+    // Multicast-Loopback deaktivieren
     unsigned int loop = 1;
     if (setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &loop, sizeof(loop)) < 0) {
-        perror("Fehler beim Aktivieren des Multicast-Loopback");
+        perror("Fehler beim Deaktivieren des Multicast-Loopbacks");
         close(sock);
         exit(EXIT_FAILURE);
     }
-    printf("Multicast-Loopback aktiviert.\n");
+    printf("Multicast-Loopback deaktiviert.\n");
 
     // Hop Limit setzen
     unsigned int hop_limit = 64;
@@ -285,13 +296,13 @@ int main() {
     printf("Hop Limit auf %u gesetzt.\n", hop_limit);
 
     // Timeout für Empfang setzen
-    struct timeval tv = {TIMEOUT_SEC, 0};
+    struct timeval tv = {2, 0};
     if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
         perror("Fehler beim Setzen des Timeouts");
         close(sock);
         exit(EXIT_FAILURE);
     }
-    printf("Timeout auf %d Sekunden gesetzt.\n", TIMEOUT_SEC);
+    printf("Timeout auf 10 Sekunden gesetzt.\n");
 
     // Handshake mit dem Server
     printf("Sende Hallo-Nachricht an den Server...\n");
@@ -299,7 +310,8 @@ int main() {
 
     // Pakete empfangen und dekodieren
     printf("Empfange Pakete von der Multicast-Gruppe...\n");
-    packet_list = receive_and_decode_packets(sock, &serveraddr, &packet_count);
+    packet_list = receive_and_decode_packets(sock, &packet_count);
+
 
     // Debug-Ausgabe der empfangenen Pakete
     printf("Empfangene Pakete: %d\n", packet_count);
@@ -331,3 +343,4 @@ int main() {
     printf("Socket geschlossen, Programm beendet.\n");
     return 0;
 }
+
