@@ -182,22 +182,6 @@ char** create_encoded_array(Packet* packetlist, int len) {
     return encoded_array;
 }
 
-
-
-// Usage example
-void send_packets(int sock, Packet *packetlist, int len, struct sockaddr_in6 *multicastaddr) {
-    char buffer[1024];
-
-    for (int i = 0; i < len; i++) {
-        snprintf(buffer, sizeof(buffer), "%d|%s", packetlist[i].sequence_number, packetlist[i].data);
-        if (sendto(sock, buffer, strlen(buffer), 0, (struct sockaddr *)multicastaddr, sizeof(*multicastaddr)) < 0) {
-            perror("Fehler beim Senden eines Pakets");
-        } else {
-            printf("Paket %d gesendet: %s\n", packetlist[i].sequence_number, packetlist[i].data);
-        }
-    }
-}
-
 void handle_nack(int sock, NACK *nack, Packet *packetlist, int packet_count, struct sockaddr_in6 *clientaddr) {
     int seqnr = nack->Seqnr;
     if (seqnr < 0 || seqnr >= packet_count) {
@@ -229,9 +213,69 @@ void handle_nack(int sock, NACK *nack, Packet *packetlist, int packet_count, str
     printf("Paket %d konnte nicht gefunden werden\n", seqnr);
 }
 
+void send_packets(int sock, Packet *packetlist, int len, struct sockaddr_in6 *multicastaddr, int window_size) {
+    char buffer[1024];
+    int start = 0; // Start index for the current window
+    Packet *sent_packetlist = malloc(window_size * sizeof(Packet)); // Allocate memory for sent packets based on window size
+    int sent_count = 0; // Counter for sent packets
+
+    while (start < len) {
+        int end = start + window_size; // Calculate the end index for the current window
+        if (end > len) {
+            end = len; // Ensure the end index does not exceed the packet count
+        }
+
+        // Reset sent_count for the new window
+        sent_count = 0;
+
+        // Send packets in the current window
+        for (int i = start; i < end; i++) {
+            snprintf(buffer, sizeof(buffer), "%d|%s", packetlist[i].sequence_number, packetlist[i].data);
+            if (sendto(sock, buffer, strlen(buffer), 0, (struct sockaddr *)multicastaddr, sizeof(*multicastaddr)) < 0) {
+                perror("Fehler beim Senden eines Pakets");
+            } else {
+                printf("Paket %d gesendet: %s\n", packetlist[i].sequence_number, packetlist[i].data);
+                sent_packetlist[sent_count++] = packetlist[i]; // Store the sent packet
+            }
+        }
+
+        // Wait for NACKs after sending the current window
+        struct timeval tv = {10, 0}; // Timeout for receiving NACKs
+        if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+            perror("Fehler beim Setzen des Timeouts");
+            free(sent_packetlist); // Free allocated memory
+            return;
+        }
+
+        printf("Warten auf NACKs nach dem Senden von Paketen im Fenster [%d - %d)\n", start, end);
+
+        while (1) {
+            NACK nack;
+            struct sockaddr_in6 clientaddr;
+            int nack_result = NACK_Receiver_FKT(sock, &clientaddr, &nack);
+            if (nack_result == 0) {
+                handle_nack(sock, &nack, sent_packetlist, sent_count, &clientaddr); // Use sent_packetlist
+            } else if (nack_result == -1) {
+                printf("Keine weiteren NACK-Nachrichten empfangen (Timeout oder Fehler).\n");
+                break;
+            }
+        }
+
+        // Move to the next window
+        start = end;
+    }
+
+    printf("Alle Pakete gesendet.\n");
+    free(sent_packetlist); // Free allocated memory
+}
+
+
+
+
 int main(void) {
     struct sockaddr_in6 serveraddr = {0}, clientaddr = {0}, multicastaddr = {0};
     int sock;
+    int window_size = 3;
 
     // Socket erstellen
     sock = socket(AF_INET6, SOCK_DGRAM, 0);
@@ -297,27 +341,7 @@ int main(void) {
 
     // Pakete senden
     printf("Sende Pakete an die Multicast-Gruppe...\n");
-    send_packets(sock, packetlist, packet_count, &multicastaddr);
-
-    // Timeout für NACK-Empfang setzen
-    struct timeval tv = {10, 0};
-    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
-        perror("Fehler beim Setzen des Timeouts");
-        close(sock);
-        exit(EXIT_FAILURE);
-    }
-
-    // NACK-Handling
-    while (1) {
-        NACK nack;
-        int nack_result = NACK_Receiver_FKT(sock, &clientaddr, &nack);
-        if (nack_result == 0) {
-            handle_nack(sock, &nack, packetlist, packet_count, &clientaddr);
-        } else if (nack_result == -1) {
-            printf("Keine NACK-Nachricht empfangen (Timeout oder Fehler)\n");
-            break;
-        }
-    }
+    send_packets(sock, packetlist, packet_count, &multicastaddr, window_size);
 
     close(sock);
     free(packetlist);
