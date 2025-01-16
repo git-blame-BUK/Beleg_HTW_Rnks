@@ -5,20 +5,25 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <netinet/in.h>
+#include <net/if.h>
 #include <sys/types.h>
 #include <errno.h>
 #include <sys/time.h>
 #include "packet.h"
 #include "nack.h"
 
-void wait_for_hello_message(int hello_sock, struct sockaddr_in *clientaddr) {
+#define MULTICAST_ADDR "ff02::1" // Beispielhafte IPv6-Multicast-Adresse
+#define MULTICAST_PORT 40400
+#define MAX_PACKETS 10
+
+void wait_for_hello_message(int sock, struct sockaddr_in6 *clientaddr) {
     socklen_t addr_len = sizeof(*clientaddr);
     char buffer[1024] = {0};
 
     printf("Warte auf Hallo-Nachricht vom Client...\n");
 
     while (1) {
-        int len = recvfrom(hello_sock, buffer, sizeof(buffer) - 1, 0, (struct sockaddr *)clientaddr, &addr_len);
+        int len = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, (struct sockaddr *)clientaddr, &addr_len);
         if (len < 0) {
             perror("Fehler beim Empfang der Hallo-Nachricht");
             continue;
@@ -28,9 +33,8 @@ void wait_for_hello_message(int hello_sock, struct sockaddr_in *clientaddr) {
         if (strcmp(buffer, "Hallo") == 0) {
             printf("Hallo-Nachricht vom Client empfangen\n");
 
-            // Antwort senden
             const char *reply = "Hallo zurück";
-            if (sendto(hello_sock, reply, strlen(reply), 0, (struct sockaddr *)clientaddr, addr_len) < 0) {
+            if (sendto(sock, reply, strlen(reply), 0, (struct sockaddr *)clientaddr, addr_len) < 0) {
                 perror("Fehler beim Senden der Hallo-Antwort");
             } else {
                 printf("Antwort gesendet: %s\n", reply);
@@ -41,12 +45,13 @@ void wait_for_hello_message(int hello_sock, struct sockaddr_in *clientaddr) {
 }
 
 
-int NACK_Receiver_FKT(int sock, struct sockaddr_in *serveraddr, NACK *nack) {
+
+int NACK_Receiver_FKT(int sock, struct sockaddr_in6 *clientaddr, NACK *nack) {
     char buffer[1024] = {0};
-    socklen_t addr_len = sizeof(*serveraddr);
+    socklen_t addr_len = sizeof(*clientaddr);
 
     // NACK empfangen
-    int len = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr *)serveraddr, &addr_len);
+    int len = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr *)clientaddr, &addr_len);
     if (len == -1) {
         if (errno == EWOULDBLOCK || errno == EAGAIN) {
             printf("Timeout: Kein NACK empfangen\n");
@@ -65,6 +70,29 @@ int NACK_Receiver_FKT(int sock, struct sockaddr_in *serveraddr, NACK *nack) {
         fprintf(stderr, "Fehler: Ungültige NACK-Daten empfangen\n");
         return -1;
     }
+}
+
+void setup_multicast_group(int sock) {
+    struct ipv6_mreq group;
+    memset(&group, 0, sizeof(group));
+
+    if (inet_pton(AF_INET6, MULTICAST_ADDR, &group.ipv6mr_multiaddr) != 1) {
+        perror("Ungültige Multicast-Adresse");
+        exit(EXIT_FAILURE);
+    }
+
+    group.ipv6mr_interface = if_nametoindex("lo0"); // Ersetzen Sie "lo0" durch das gewünschte Interface
+    if (group.ipv6mr_interface == 0) {
+        perror("Fehler beim Ermitteln der Interface-ID");
+        exit(EXIT_FAILURE);
+    }
+
+    if (setsockopt(sock, IPPROTO_IPV6, IPV6_JOIN_GROUP, &group, sizeof(group)) < 0) {
+        perror("Fehler beim Beitreten zur Multicast-Gruppe");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Dem Multicast-Gruppe %s beigetreten\n", MULTICAST_ADDR);
 }
 
 int read_file(const char* filename, Packet** packets_out) {
@@ -153,25 +181,21 @@ char** create_encoded_array(Packet* packetlist, int len) {
 
 
 // Usage example
-void send_packets(int sock, Packet* packetlist, int len, struct sockaddr_in serveraddr) {
-    char** encoded_array = create_encoded_array(packetlist, len);
-    if (encoded_array == NULL) {
-        return;
-    }
+void send_packets(int sock, Packet *packetlist, int len, struct sockaddr_in6 *multicastaddr) {
+    char buffer[1024];
 
     for (int i = 0; i < len; i++) {
-        int sent_len = sendto(sock, (const char *)encoded_array[i], strlen(encoded_array[i]), 0, (const struct sockaddr *)&serveraddr, sizeof(serveraddr));
-        if (sent_len == -1) {
-            perror("Fehler beim senden");
+        snprintf(buffer, sizeof(buffer), "%d|%s", packetlist[i].sequence_number, packetlist[i].data);
+        if (sendto(sock, buffer, strlen(buffer), 0, (struct sockaddr *)multicastaddr, sizeof(*multicastaddr)) < 0) {
+            perror("Fehler beim Senden eines Pakets");
+        } else {
+            printf("Paket %d gesendet: %s\n", packetlist[i].sequence_number, packetlist[i].data);
         }
-        free(encoded_array[i]);
     }
-
-    free(encoded_array);
 }
 
-void handle_nack(int sock, NACK *nack, Packet *packetlist, int packet_count, struct sockaddr_in *clientaddr) {
-    int seqnr = nack->Seqnr;  // Fehlende Sequenznummer aus dem NACK
+void handle_nack(int sock, NACK *nack, Packet *packetlist, int packet_count, struct sockaddr_in6 *clientaddr) {
+    int seqnr = nack->Seqnr;
     if (seqnr < 0 || seqnr >= packet_count) {
         printf("Ungültige Sequenznummer im NACK: %d\n", seqnr);
         return;
@@ -180,11 +204,9 @@ void handle_nack(int sock, NACK *nack, Packet *packetlist, int packet_count, str
 
     for (int i = 0; i < packet_count; i++) {
         if (packetlist[i].sequence_number == seqnr) {
-            // Paket erneut senden
             char *encoded_packet = encode_packet(&packetlist[i]);
             if (encoded_packet) {
-                int sent_len = sendto(sock, encoded_packet, strlen(encoded_packet), 0,
-                                      (struct sockaddr *)clientaddr, sizeof(*clientaddr));
+                int sent_len = sendto(sock, encoded_packet, strlen(encoded_packet), 0, (struct sockaddr *)clientaddr, sizeof(*clientaddr));
                 if (sent_len == -1) {
                     perror("Fehler beim erneuten Senden des Pakets");
                 } else {
@@ -196,32 +218,58 @@ void handle_nack(int sock, NACK *nack, Packet *packetlist, int packet_count, str
         }
     }
 
+    printf("Paket %d konnte nicht gefunden werden\n", seqnr);
+
+
     // Wenn Paket nicht gefunden wurde
     printf("Paket %d konnte nicht gefunden werden\n", seqnr);
 }
 
 int main(void) {
-    struct sockaddr_in serveraddr = {0}, clientaddr = {0};
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in6 serveraddr = {0}, clientaddr = {0}, multicastaddr = {0};
+    int sock = socket(AF_INET6, SOCK_DGRAM, 0);
     if (sock == -1) {
         perror("Fehler beim Erstellen des Sockets");
         exit(EXIT_FAILURE);
     }
 
-    serveraddr.sin_family = AF_INET;
-    serveraddr.sin_port = htons(40400);
-    serveraddr.sin_addr.s_addr = INADDR_ANY;
+    serveraddr.sin6_family = AF_INET6;
+    serveraddr.sin6_port = htons(MULTICAST_PORT);
+    serveraddr.sin6_addr = in6addr_any;
+
 
     if (bind(sock, (struct sockaddr *)&serveraddr, sizeof(serveraddr)) == -1) {
         perror("Fehler beim Binden des Sockets");
         close(sock);
         exit(EXIT_FAILURE);
     }
-    
+    setup_multicast_group(sock);
     // Zieladresse (Client) setzen
-    clientaddr.sin_family = AF_INET;
-    clientaddr.sin_port = htons(40401); // Zielport
-    clientaddr.sin_addr.s_addr = inet_addr("127.0.0.1"); // Ziel-IP (localhost)
+    multicastaddr.sin6_family = AF_INET6;
+    multicastaddr.sin6_port = htons(MULTICAST_PORT);
+    if (inet_pton(AF_INET6, MULTICAST_ADDR, &multicastaddr.sin6_addr) != 1) {
+        perror("Ungültige Multicast-Adresse");
+        close(sock);
+        exit(EXIT_FAILURE);
+    }
+
+    // Setze die Scope-ID (Interface, z. B. "en0" für Wi-Fi)
+    multicastaddr.sin6_scope_id = if_nametoindex("lo0"); // Ersetzen Sie "en0" durch Ihr Interface
+    if (multicastaddr.sin6_scope_id == 0) {
+        perror("Fehler beim Ermitteln der Interface-ID");
+        close(sock);
+        exit(EXIT_FAILURE);
+    }
+    unsigned int loop = 1;
+    if (setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &loop, sizeof(loop)) < 0) {
+        perror("Fehler beim Aktivieren des Multicast-Loopback");
+    }
+    unsigned int hop_limit = 64;
+    if (setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &hop_limit, sizeof(hop_limit)) < 0) {
+        perror("Fehler beim Setzen des Hop Limits");
+    }
+
+
 
     // Pakete definieren
     Packet* packetlist = NULL;
@@ -243,11 +291,10 @@ int main(void) {
    //     snprintf(packetlist[i].data, MAX_LINE_LEN, "Daten für Paket %d", i);
    // }
     // Kurze Verzögerung vor dem Senden der Pakete
-    usleep(100000); // 100 ms
+    usleep(1900000); // 100 ms
 
     // Pakete senden
-    send_packets(sock, packetlist, packet_count, clientaddr);
-
+    send_packets(sock, packetlist, packet_count, &multicastaddr);
     // Timeout für NACK-Empfang setzen
     struct timeval tv = {10, 0};
     if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
@@ -270,4 +317,5 @@ int main(void) {
 
     close(sock);
     return 0;
+    
 }
