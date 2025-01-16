@@ -201,6 +201,21 @@ void sort_packets(Packet* packets, int packet_count) {
     }
 }
 
+void write_packets_into_file (const char *filename, Packet *packets, int packet_count)
+{
+    FILE *file = fopen(filename, "w");
+    if (file == NULL){
+        perror("Datei konnte nicht geoeffnet werden!");
+        return ;
+    }
+
+    for (int i = 0 ; i < packet_count; i++){
+        fprintf(file, "%s\n", packets[i].data);
+    }
+
+    fclose(file);
+    printf("Paketinhalte wurden erfolgreich in Datei %s geschrieben.", filename);
+}
 
 int main() {
     struct sockaddr_in6 bindaddr, serveraddr;
@@ -337,7 +352,10 @@ int main() {
                i, packet_list[i].sequence_number, packet_list[i].data);
     }
 
-    // Ressourcen freigeben
+    // erhaltene Pakete zeilenweise in Datei schreiben
+    const char* output_file = "output.txt";
+    write_packets_into_file ("output.txt", packet_list, packet_count);
+    
     free(packet_list);
     close(sock);
     printf("Socket geschlossen, Programm beendet.\n");
