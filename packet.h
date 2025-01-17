@@ -5,6 +5,7 @@
 
 typedef struct {
     int sequence_number;
+    int is_end;
     char data[MAX_LINE_LEN];
 } Packet;
 
