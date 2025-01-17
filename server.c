@@ -230,7 +230,7 @@ void handle_nack(int sock, NACK *nack, Packet *packetlist, int packet_count, str
 }
 
 int main(void) {
-    struct sockaddr_in6 serveraddr = {0}, clientaddr = {0}, multicastaddr = {0};
+    struct sockaddr_in6 serveraddr = {0}, multicastaddr = {0};
     int sock;
 
     // Socket erstellen
@@ -293,7 +293,7 @@ int main(void) {
     usleep(1500000);
 
     // Warten auf Hallo-Nachricht vom Client
-    wait_for_hello_message(sock, &clientaddr);
+    wait_for_hello_message(sock, &multicastaddr);
 
     // Pakete senden
     printf("Sende Pakete an die Multicast-Gruppe...\n");
@@ -310,9 +310,9 @@ int main(void) {
     // NACK-Handling
     while (1) {
         NACK nack;
-        int nack_result = NACK_Receiver_FKT(sock, &clientaddr, &nack);
+        int nack_result = NACK_Receiver_FKT(sock, &multicastaddr, &nack);
         if (nack_result == 0) {
-            handle_nack(sock, &nack, packetlist, packet_count, &clientaddr);
+            handle_nack(sock, &nack, packetlist, packet_count, &multicastaddr);
         } else if (nack_result == -1) {
             printf("Keine NACK-Nachricht empfangen (Timeout oder Fehler)\n");
             break;
