@@ -1,364 +1,151 @@
-#include <string.h>
-#include <stdlib.h>
+// Sender-Programm
 #include <stdio.h>
-#include <sys/types.h>
-#include <sys/socket.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <net/if.h> 
-#include <unistd.h>
+#include <net/if.h>
+#include <fcntl.h>
+#include <sys/socket.h>
 #include <errno.h>
-#include <sys/time.h>
+#include <time.h>
+
 #include "packet.h"
-#include "nack.h"
 
-#define MULTICAST_ADDR "ff02::1" // Multicast-Adresse
-#define MULTICAST_PORT 40400
-#define MAX_PACKETS 10
-#define TIMEOUT_SEC 10
-
-void send_hello_message(int sock, struct sockaddr_in6 *serveraddr) {
-    const char *hello_msg = "Hallo";
-    char buffer[1024] = {0};
-    socklen_t addr_len = sizeof(*serveraddr);
-
-    // "Hallo"-Nachricht senden
-    if (sendto(sock, hello_msg, strlen(hello_msg), 0, (struct sockaddr *)serveraddr, addr_len) < 0) {
-        perror("Fehler beim Senden der Hallo-Nachricht");
+int create_socket(const char* multicast_address, int port, const char* interface_name, struct sockaddr_in6* multicast_addr) {
+    int sock = socket(AF_INET6, SOCK_DGRAM, 0);
+    if (sock < 0){
+        printf("Socket konnte nicht erstellt werden\n");
         exit(EXIT_FAILURE);
     }
-    printf("Hallo-Nachricht gesendet\n");
-
-    // Auf Antwort warten
-    int len = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, (struct sockaddr *)serveraddr, &addr_len);
-    if (len < 0) {
-        perror("Fehler beim Empfang der Hallo-Antwort");
+    int reuse = 1;
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+        printf("setsockopt(SO_REUSEADDR) fehlgeschlagen\n");
         exit(EXIT_FAILURE);
     }
-    buffer[len] = '\0';
-    printf("Antwort vom Server: %s\n", buffer);
+    
+    //loopback aktiv;
+    unsigned int loop = 1;
+    setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &loop, sizeof(loop));
+    
+    struct ipv6_mreq group;
+    memset(&group, 0, sizeof(group));
 
-    if (strcmp(buffer, "Hallo zurück") != 0) {
-        fprintf(stderr, "Unerwartete Antwort vom Server: %s\n", buffer);
+    if (inet_pton(AF_INET6, multicast_address, &group.ipv6mr_multiaddr) != 1) {
+        printf("Fehlerhafte Multi-Cast-Adresse\n");
         exit(EXIT_FAILURE);
+    }
+
+    group.ipv6mr_interface = if_nametoindex(interface_name);
+    if (group.ipv6mr_interface == 0) {
+        printf("Fehlerhafter Interface-Name\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (setsockopt(sock, IPPROTO_IPV6, IPV6_JOIN_GROUP, &group, sizeof(group)) < 0) {
+        printf("Fehler beim Beitreten zur Multi-Cast-Gruppe\n");
+        exit(EXIT_FAILURE);
+    }
+
+    memset(multicast_addr, 0, sizeof(*multicast_addr));
+    multicast_addr->sin6_family = AF_INET6;
+    multicast_addr->sin6_port = htons(port);
+    multicast_addr->sin6_addr = group.ipv6mr_multiaddr;
+    multicast_addr->sin6_scope_id = group.ipv6mr_interface;
+
+    return sock;
+}
+
+void send_one_packet(int sock, const struct sockaddr_in6* multicast_addr, Packet packet) {
+    if (sendto(sock, &packet, sizeof(packet), 0, (struct sockaddr*)multicast_addr, sizeof(*multicast_addr)) < 0) {
+        printf("Paket konnte nicht gesendet werden\n");
+    }
+
+    printf("Paket mit Sequenznummer %d und Daten: %s gesendet\n", packet.sequence_number, packet.data);
+}
+
+void send_packet_list(int sock, const struct sockaddr_in6* multicast_addr, Packet* packets, int packet_count) {
+    for (int i = 0; i < packet_count; i++) {
+        if (i == packet_count - 1) {
+            packets[i].is_end = 1;
+        }
+        send_one_packet(sock, multicast_addr, packets[i]);
     }
 }
 
-
-/**
- * Decodes a single, encoded packet string (e.g. "5|Hello").
- */
-Packet decode_packet(const char *encoded) {
-    Packet packet;
-    memset(&packet, 0, sizeof(packet));
-
-    int sequence_number;
-    char data_buffer[MAX_LINE_LEN] = {0};
-
-    int parsed = sscanf(encoded, "%d|%1023[^\n]", &sequence_number, data_buffer);
-    if (parsed < 2) {
-        packet.sequence_number = 0;
-        strncpy(packet.data, "", MAX_LINE_LEN);
-    } else {
-        packet.sequence_number = sequence_number;
-        strncpy(packet.data, data_buffer, MAX_LINE_LEN - 1);
-        packet.data[MAX_LINE_LEN - 1] = '\0';
+int read_file(const char* filename, Packet** packets_out) {
+    //open file
+    FILE* file = fopen(filename, "r");
+    if (file == NULL) {
+        perror("Fehler beim Öffnen der Datei");
+        exit(EXIT_FAILURE);
     }
 
-    return packet;
-}
+    int counter = 0;
+    int max_packet = 10;
 
-/**
- * Continuously receive and decode packets from the given socket.
- * This example stops after receiving MAX_PACKETS or a recv error/zero-length message.
- *
- * @param sock      The socket file descriptor to receive from
- * @param serveraddr The server address structure
- * @param out_count Output pointer where the number of received packets is stored
- * @return Pointer to a heap-allocated array of Packet. Caller must free().
- */
-Packet* receive_and_decode_packets(int sock, int* out_count) {
-    Packet* packets = (Packet*)malloc(sizeof(Packet) * MAX_PACKETS);
-    if (!packets) {
-        perror("malloc failed");
-        *out_count = 0;
-        return NULL;
+    //make paketlist 
+    Packet* packets = malloc(max_packet * sizeof(Packet));
+    if (packets == NULL) {
+        perror("Fehler beim Allokieren von Speicher für die Paketliste.");
+        fclose(file);
+        exit(EXIT_FAILURE);
     }
-    memset(packets, 0, sizeof(Packet) * MAX_PACKETS);
 
-    int count = 0;
-    struct sockaddr_in6 senderaddr;
-    socklen_t sender_len = sizeof(senderaddr);
-
-    printf("Warte auf Multicast-Pakete...\n");
-
-    while (count < MAX_PACKETS) {
-        char buffer[MAX_LINE_LEN + 32] = {0};
-        int n = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, (struct sockaddr *)&senderaddr, &sender_len);
-        if (n < 0) {
-            perror("recvfrom fehlgeschlagen");
+    //reading each line of the file
+    char line[MAX_LINE_LEN];
+    while (fgets(line, MAX_LINE_LEN, file) != NULL) {
+        char* newline_pos = strchr(line, '\n');
+        if (newline_pos) {
+            *newline_pos = '\0';
+        }
+        //maximum size reached
+        if (counter == max_packet) {
+            printf("Maximale Anzahl von Paketen erreicht.");
             break;
         }
 
-        buffer[n] = '\0';
-        printf("Empfangenes Paket (Länge %d): %s\n", n, buffer);
+        // Parse line in correct format: "<seqnr>|<data>")
+        packets[counter].sequence_number = counter; // automatic sequenznumber
+        strncpy(packets[counter].data, line, MAX_LINE_LEN - 1); 
+        packets[counter].data[MAX_LINE_LEN - 1] = '\0'; 
 
-        Packet received_packet = decode_packet(buffer);
-        packets[count] = received_packet;
-        count++;
+        printf("Gelesene Zeile: seq=%d, data=%s\n", packets[counter].sequence_number, packets[counter].data);
+
+        counter++;
     }
-
-    *out_count = count;
-    return packets;
-}
-
-
-
-//Missing Packet check mit rückgabewert missing count
-
-int check_missing_packets(Packet *packets, int received_count, int expected_count, int sock, struct sockaddr_in6 *serveraddr) {
-    int missing_count = 0;
-
-    for (int i = 0; i < expected_count; i++) {
-        int found = 0;
-        for (int j = 0; j < received_count; j++) {
-            if (packets[j].sequence_number == i) {
-                found = 1;
-                break;
-            }
-        }
-        if (!found) {
-            missing_count++;
-            printf("Fehlendes Paket: %d\n", i);
-
-            // Sende NACK
-            NACK nack = {0};
-            nack.Seqnr = i;
-            nack.sender_Adresse = 1234;  // Beispiel-Senderadresse
-            nack.Timestamp = (int)time(NULL);
-
-            sendto(sock, &nack, sizeof(NACK), 0, (struct sockaddr *)serveraddr, sizeof(*serveraddr));
-            printf("NACK für Paket %d gesendet\n", i);
-        }
-    }
-
-    return missing_count;
-}
-
-
-//add missing packets after NACK cycle
-void add_packet_if_missing(Packet* packets, int* packet_count, int max_packets, Packet new_packet) {
-    for (int i = 0; i < *packet_count; i++) {
-        if (packets[i].sequence_number == new_packet.sequence_number) {
-            // Paket existiert bereits
-            return;
-        }
-    }
-
-    // Neues Paket hinzufügen, wenn Platz vorhanden ist
-    if (*packet_count < max_packets) {
-        packets[*packet_count] = new_packet;
-        (*packet_count)++;
-    }
-}
-
-//missing Packet receiver after Nack cicle
-void receive_missing_packets(int sock, struct sockaddr_in6* serveraddr, Packet* packets, int* packet_count, int max_packets) {
-    char buffer[MAX_LINE_LEN + 32] = {0};
-    socklen_t server_len = sizeof(*serveraddr);
-
-    while (1) {
-        int n = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, (struct sockaddr *)serveraddr, &server_len);
-        if (n < 0) {
-            if (errno == EWOULDBLOCK || errno == EAGAIN) {
-                printf("Timeout: Keine weiteren Pakete empfangen\n");
-                break;
-            } else {
-                perror("Fehler beim Empfangen der Pakete(NACK)");
-                break;
-            }
-        }
-
-        buffer[n] = '\0';
-        Packet new_packet = decode_packet(buffer);
-        printf("Empfangenes Paket: seq = %d, data = %s\n", new_packet.sequence_number, new_packet.data);
-
-        // Paket hinzufügen, falls es fehlt
-        add_packet_if_missing(packets, packet_count, max_packets, new_packet);
-    }
-}
-// Bubble sort für erneut empfangene pakete
-void sort_packets(Packet* packets, int packet_count) {
-    for (int i = 0; i < packet_count - 1; i++) {
-        for (int j = 0; j < packet_count - i - 1; j++) {
-            if (packets[j].sequence_number > packets[j + 1].sequence_number) {
-                // Pakete tauschen
-                Packet temp = packets[j];
-                packets[j] = packets[j + 1];
-                packets[j + 1] = temp;
-            }
-        }
-    }
-}
-
-void write_packets_into_file (const char *filename, Packet *packets, int packet_count)
-{
-    FILE *file = fopen(filename, "w");
-    if (file == NULL){
-        perror("Datei konnte nicht geoeffnet werden!");
-        return ;
-    }
-
-    for (int i = 0 ; i < packet_count; i++){
-        fprintf(file, "%s\n", packets[i].data);
-    }
-
     fclose(file);
-    printf("Paketinhalte wurden erfolgreich in Datei %s geschrieben.", filename);
+
+    *packets_out = packets;
+    return counter;
 }
 
-int main() {
-    struct sockaddr_in6 bindaddr, serveraddr;
-    struct ipv6_mreq group;
-    int sock;
-    int packet_count = 0;
-    Packet *packet_list = NULL;
 
-    // Socket erstellen
-    sock = socket(AF_INET6, SOCK_DGRAM, 0);
-    if (sock == -1) {
-        perror("Fehler beim Erstellen des Sockets");
-        exit(EXIT_FAILURE);
-    }
-    printf("Socket erfolgreich erstellt.\n");
 
-    // SO_REUSEADDR setzen
-    int reuse = 1;
-    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-        perror("Fehler beim Setzen von SO_REUSEADDR");
-        close(sock);
+
+
+int main(int argc, char* argv[]) {
+    if (argc < 4) {
+        fprintf(stderr, "Nutzung: %s <multicast_address> <port> <interface>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
-    // Clientadresse für Binding vorbereiten
-    memset(&bindaddr, 0, sizeof(bindaddr));
-    bindaddr.sin6_family = AF_INET6;
-    bindaddr.sin6_addr = in6addr_any;
-    bindaddr.sin6_port = htons(40401); // Anderer Port als Server
-    bindaddr.sin6_scope_id = if_nametoindex("lo0");
+    const char* multicast_address = argv[1];
+    int port = atoi(argv[2]);
+    const char* interface_name = argv[3];
 
-    // Client an Adresse binden
-    if (bind(sock, (struct sockaddr *)&bindaddr, sizeof(bindaddr)) < 0) {
-        perror("Fehler beim Binden des Clients an die Schnittstelle");
-        close(sock);
-        exit(EXIT_FAILURE);
-    }
-    printf("Client erfolgreich an Port 40401 und Schnittstelle lo0 gebunden.\n");
+    struct sockaddr_in6 multicast_addr;
+    int sock = create_socket(multicast_address, port, interface_name, &multicast_addr);
 
-    // Multicast-Adresse setzen
-    if (inet_pton(AF_INET6, MULTICAST_ADDR, &group.ipv6mr_multiaddr) != 1) {
-        perror("Ungültige Multicast-Adresse");
-        close(sock);
-        exit(EXIT_FAILURE);
-    }
-    printf("Multicast-Adresse gesetzt: %s\n", MULTICAST_ADDR);
+    Packet hello_packet = {0, 0, "Hello"};
+    send_one_packet(sock, &multicast_addr, hello_packet);
 
-    // Interface-ID für Multicast-Gruppe setzen
-    group.ipv6mr_interface = if_nametoindex("lo0");
-    if (group.ipv6mr_interface == 0) {
-        perror("Fehler beim Ermitteln der Interface-ID");
-        close(sock);
-        exit(EXIT_FAILURE);
-    }
-    printf("Interface-ID gesetzt: %u\n", group.ipv6mr_interface);
+    Packet *packetlist = NULL;
+    int packet_count = read_file("pakete.txt", &packetlist);
+    send_packet_list(sock, &multicast_addr, packetlist, packet_count);
 
-    // Multicast-Gruppe beitreten
-    if (setsockopt(sock, IPPROTO_IPV6, IPV6_JOIN_GROUP, &group, sizeof(group)) < 0) {
-        perror("Fehler beim Beitreten zur Multicast-Gruppe");
-        close(sock);
-        exit(EXIT_FAILURE);
-    }
-    printf("Multicast-Gruppe %s auf Interface-ID %u erfolgreich abonniert.\n", MULTICAST_ADDR, group.ipv6mr_interface);
-
-    // Scope-ID und Serveradresse konfigurieren
-    memset(&serveraddr, 0, sizeof(serveraddr));
-    serveraddr.sin6_family = AF_INET6;
-    serveraddr.sin6_port = htons(MULTICAST_PORT);
-    if (inet_pton(AF_INET6, MULTICAST_ADDR, &serveraddr.sin6_addr) != 1) {
-        perror("Ungültige Multicast-Adresse für Ziel");
-        close(sock);
-        exit(EXIT_FAILURE);
-    }
-    serveraddr.sin6_scope_id = group.ipv6mr_interface;
-    printf("Client Scope-ID: %u\n", group.ipv6mr_interface);
-
-    // Multicast-Loopback deaktivieren
-    unsigned int loop = 1;
-    if (setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &loop, sizeof(loop)) < 0) {
-        perror("Fehler beim Deaktivieren des Multicast-Loopbacks");
-        close(sock);
-        exit(EXIT_FAILURE);
-    }
-    printf("Multicast-Loopback deaktiviert.\n");
-
-    // Hop Limit setzen
-    unsigned int hop_limit = 64;
-    if (setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &hop_limit, sizeof(hop_limit)) < 0) {
-        perror("Fehler beim Setzen des Hop Limits");
-        close(sock);
-        exit(EXIT_FAILURE);
-    }
-    printf("Hop Limit auf %u gesetzt.\n", hop_limit);
-
-    // Timeout für Empfang setzen
-    struct timeval tv = {2, 0};
-    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
-        perror("Fehler beim Setzen des Timeouts");
-        close(sock);
-        exit(EXIT_FAILURE);
-    }
-    printf("Timeout auf 10 Sekunden gesetzt.\n");
-
-    // Handshake mit dem Server
-    printf("Sende Hallo-Nachricht an den Server...\n");
-    send_hello_message(sock, &serveraddr);
-
-    // Pakete empfangen und dekodieren
-    printf("Empfange Pakete von der Multicast-Gruppe...\n");
-    packet_list = receive_and_decode_packets(sock, &packet_count);
-
-
-    // Debug-Ausgabe der empfangenen Pakete
-    printf("Empfangene Pakete: %d\n", packet_count);
-    for (int i = 0; i < packet_count; i++) {
-        printf("  Packet[%d]: seq = %d, data = %s\n",
-               i, packet_list[i].sequence_number, packet_list[i].data);
-    }
-
-    // Fehlende Pakete prüfen
-    int missing_count = check_missing_packets(packet_list, packet_count, MAX_PACKETS, sock, &serveraddr);
-    if (missing_count > 0) {
-        printf("Empfange fehlende Pakete...\n");
-        receive_missing_packets(sock, &serveraddr, packet_list, &packet_count, MAX_PACKETS);
-    } else {
-        printf("Alle Pakete wurden empfangen.\n");
-    }
-
-    // Pakete sortieren und ausgeben
-    sort_packets(packet_list, packet_count);
-    printf("Vollständige Paketliste:\n");
-    for (int i = 0; i < packet_count; i++) {
-        printf("  Packet[%d]: seq = %d, data = %s\n",
-               i, packet_list[i].sequence_number, packet_list[i].data);
-    }
-
-    // erhaltene Pakete zeilenweise in Datei schreiben
-    const char* output_file = "output.txt";
-    write_packets_into_file ("output.txt", packet_list, packet_count);
-    
-    free(packet_list);
+    printf("Client beendet\n");
     close(sock);
-    printf("Socket geschlossen, Programm beendet.\n");
     return 0;
 }
-
