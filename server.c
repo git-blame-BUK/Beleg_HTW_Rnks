@@ -185,11 +185,15 @@ char** create_encoded_array(Packet* packetlist, int len) {
 
 
 // Usage example
-void send_packets(int sock, Packet *packetlist, int len, struct sockaddr_in6 *multicastaddr) {
+void send_packets(int sock, Packet *packetlist, int len, struct sockaddr_in6 *multicastaddr, int fehlerfall) {
     char buffer[1024];
 
     for (int i = 0; i < len; i++) {
         snprintf(buffer, sizeof(buffer), "%d|%s", packetlist[i].sequence_number, packetlist[i].data);
+        if (fehlerfall == 1 && i == 2){
+            printf("fehlerfall simuliert");
+            continue;
+        }
         if (sendto(sock, buffer, strlen(buffer), 0, (struct sockaddr *)multicastaddr, sizeof(*multicastaddr)) < 0) {
             perror("Fehler beim Senden eines Pakets");
         } else {
@@ -232,6 +236,7 @@ void handle_nack(int sock, NACK *nack, Packet *packetlist, int packet_count, str
 int main(void) {
     struct sockaddr_in6 serveraddr = {0}, multicastaddr = {0};
     int sock;
+    int fehlerfall = 1;
 
     // Socket erstellen
     sock = socket(AF_INET6, SOCK_DGRAM, 0);
@@ -297,7 +302,9 @@ int main(void) {
 
     // Pakete senden
     printf("Sende Pakete an die Multicast-Gruppe...\n");
-    send_packets(sock, packetlist, packet_count, &multicastaddr);
+    send_packets(sock, packetlist, packet_count, &multicastaddr, fehlerfall);
+
+
 
     // Timeout für NACK-Empfang setzen
     struct timeval tv = {10, 0};
