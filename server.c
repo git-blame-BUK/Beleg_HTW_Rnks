@@ -13,42 +13,33 @@
 #include <time.h>
 #include <net/if.h>
 
+#include "packet.h"
 
-#define MAX_PACKET_SIZE 1024
-#define TIMEOUT 300 // Timeout in Millisekunden
-#define EOT_SEQ_NUM UINT32_MAX
-#define MAX_RECEIVERS 100
-
-// Strukturdefinitionen
-typedef struct {
-    uint32_t seq_num;
-    int is_eod;
-    char data[MAX_PACKET_SIZE];
-} Packet;
-
-// Hilfsfunktionen
-void die(const char* message) {
-    perror(message);
-    exit(EXIT_FAILURE);
-}
-
-void wait_ms(int milliseconds) {
-    usleep(milliseconds * 1000);
-}
 
 void set_nonblocking(int sock) {
     int flags = fcntl(sock, F_GETFL, 0);
-    if (flags == -1) die("F_GETFL failed");
-    if (fcntl(sock, F_SETFL, flags | O_NONBLOCK) == -1) die("F_SETFL failed");
+    if (flags == -1){
+        printf("Setzen von Non-Blocking fehlgeschlagen\n");
+        exit(EXIT_FAILURE);
+    }
 }
 
 int create_socket(const char* multicast_address, int port, const char* interface_name) {
     int sock = socket(AF_INET6, SOCK_DGRAM, 0);
-    if (sock < 0) die("Socket creation failed");
-
-    int reuse = 1;
-    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-        die("Failed to set SO_REUSEADDR");
+    if (sock < 0){
+        printf("Socket konnte nicht erstellt werden\n");
+        exit(EXIT_FAILURE);
+    }
+    {
+        int reuse = 1;
+        if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+            perror("setsockopt(SO_REUSEADDR)");
+        }
+        #ifdef SO_REUSEPORT
+        if (setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse)) < 0) {
+            perror("setsockopt(SO_REUSEPORT)");
+        }
+        #endif
     }
     unsigned int loop = 1;
     setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &loop, sizeof(loop));
@@ -61,23 +52,27 @@ int create_socket(const char* multicast_address, int port, const char* interface
     addr.sin6_addr = in6addr_any;
 
     if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        die("Bind failed");
+        printf("Bind failed");
+        exit(EXIT_FAILURE);
     }
 
     struct ipv6_mreq group;
     memset(&group, 0, sizeof(group));
 
     if (inet_pton(AF_INET6, multicast_address, &group.ipv6mr_multiaddr) != 1) {
-        die("Invalid multicast address");
+        printf("Invalid multicast address");
+        exit(EXIT_FAILURE);
     }
 
     group.ipv6mr_interface = if_nametoindex(interface_name);
     if (group.ipv6mr_interface == 0) {
-        die("Invalid interface name");
+        printf("Invalid interface name");
+        exit(EXIT_FAILURE);
     }
 
     if (setsockopt(sock, IPPROTO_IPV6, IPV6_JOIN_GROUP, &group, sizeof(group)) < 0) {
-        die("Failed to join multicast group");
+        printf("Failed to join multicast group");
+        exit(EXIT_FAILURE);
     }
 
     set_nonblocking(sock);
@@ -86,7 +81,10 @@ int create_socket(const char* multicast_address, int port, const char* interface
 
 void receiver_main(int sock, const char* output_file) {
     FILE* file = fopen(output_file, "w");
-    if (!file) die("Failed to open output file");
+    if (!file){
+        printf("Datei konnte nicht geöffnet werden\n");
+        exit(EXIT_FAILURE);
+    }
 
     Packet packet;
     while (1) {
@@ -95,22 +93,28 @@ void receiver_main(int sock, const char* output_file) {
 
         int len = recvfrom(sock, &packet, sizeof(packet), 0, (struct sockaddr*)&sender_addr, &sender_len);
         if (len < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                wait_ms(100);
-                continue;
-            }
-            perror("recvfrom failed");
-            break;
+            printf("recvfrom failed");
+            exit(EXIT_FAILURE);
         }
 
-        uint32_t seq_num = ntohl(packet.seq_num);
-        if (seq_num == EOT_SEQ_NUM) {
-            printf("End of transmission received.\n");
-            break;
+        int is_end = packet.is_end;
+        int sequence_number = packet.sequence_number;
+        char* data = packet.data;
+
+        if (strcmp(data, "Hello") == 0) {
+            printf("Hallo empfangen.\n");
+            continue;
         }
 
         fprintf(file, "%s", packet.data);
-        printf("Received packet %u\n", seq_num);
+        fprintf(file, "\n");
+        
+        printf("Received packet with sequence number %d and data: %s\n", sequence_number, data);
+
+        if (is_end == 1) {
+            printf("End of transmission received.\n");
+            break;
+        }
     }
 
     fclose(file);

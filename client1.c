@@ -11,89 +11,115 @@
 #include <errno.h>
 #include <time.h>
 
-#define MAX_PACKET_SIZE 1024
-#define TIMEOUT 300 // Timeout in Millisekunden
-#define HELLO_SEQ_NUM (UINT32_MAX - 1)
-#define MAX_EOT_RETRIES 5
-#define TIMER_MULTIPLIER 3
+#include "packet.h"
 
-// Strukturdefinitionen
-typedef struct {
-    uint32_t seq_num;
-    int is_eod;
-    char data[MAX_PACKET_SIZE];
-} Packet;
-
-// Hilfsfunktionen
-void die(const char* message) {
-    perror(message);
-    exit(EXIT_FAILURE);
-}
-
-void wait_ms(int milliseconds) {
-    usleep(milliseconds * 1000);
-}
-
-void set_nonblocking(int sock) {
-    int flags = fcntl(sock, F_GETFL, 0);
-    if (flags == -1) die("F_GETFL failed");
-    if (fcntl(sock, F_SETFL, flags | O_NONBLOCK) == -1) die("F_SETFL failed");
-}
-
-int create_socket(const char* multicast_address, int port, const char* interface_name) {
+int create_socket(const char* multicast_address, int port, const char* interface_name, struct sockaddr_in6* multicast_addr) {
     int sock = socket(AF_INET6, SOCK_DGRAM, 0);
-    if (sock < 0) die("Socket creation failed");
-
+    if (sock < 0){
+        printf("Socket konnte nicht erstellt werden\n");
+        exit(EXIT_FAILURE);
+    }
     int reuse = 1;
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-        die("Failed to set SO_REUSEADDR");
+        printf("setsockopt(SO_REUSEADDR) fehlgeschlagen\n");
+        exit(EXIT_FAILURE);
     }
+    
     //loopback aktiv;
     unsigned int loop = 1;
     setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &loop, sizeof(loop));
-
-
-    struct sockaddr_in6 addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin6_family = AF_INET6;
-    addr.sin6_port = htons(port);
-    addr.sin6_addr = in6addr_any;
-
-    //if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-    //    die("Bind failed");
-    //}
     
     struct ipv6_mreq group;
     memset(&group, 0, sizeof(group));
 
     if (inet_pton(AF_INET6, multicast_address, &group.ipv6mr_multiaddr) != 1) {
-        die("Invalid multicast address");
+        printf("Fehlerhafte Multi-Cast-Adresse\n");
+        exit(EXIT_FAILURE);
     }
 
     group.ipv6mr_interface = if_nametoindex(interface_name);
     if (group.ipv6mr_interface == 0) {
-        die("Invalid interface name");
+        printf("Fehlerhafter Interface-Name\n");
+        exit(EXIT_FAILURE);
     }
 
     if (setsockopt(sock, IPPROTO_IPV6, IPV6_JOIN_GROUP, &group, sizeof(group)) < 0) {
-        die("Failed to join multicast group");
+        printf("Fehler beim Beitreten zur Multi-Cast-Gruppe\n");
+        exit(EXIT_FAILURE);
     }
 
-    set_nonblocking(sock);
+    memset(multicast_addr, 0, sizeof(*multicast_addr));
+    multicast_addr->sin6_family = AF_INET6;
+    multicast_addr->sin6_port = htons(port);
+    multicast_addr->sin6_addr = group.ipv6mr_multiaddr;
+    multicast_addr->sin6_scope_id = group.ipv6mr_interface;
+
     return sock;
 }
 
-void send_hello_message(int sock, const struct sockaddr_in6* multicast_addr) {
-    Packet hello_packet = { .seq_num = htonl(HELLO_SEQ_NUM), .is_eod = 0 };
-
-    if (sendto(sock, &hello_packet, sizeof(hello_packet), 0, (struct sockaddr*)multicast_addr, sizeof(*multicast_addr)) < 0) {
-        die("Failed to send hello message");
+void send_one_packet(int sock, const struct sockaddr_in6* multicast_addr, Packet packet) {
+    if (sendto(sock, &packet, sizeof(packet), 0, (struct sockaddr*)multicast_addr, sizeof(*multicast_addr)) < 0) {
+        printf("Paket konnte nicht gesendet werden\n");
     }
 
-    printf("Hello message sent.\n");
+    printf("Paket mit Sequenznummer %d und Daten: %s gesendet\n", packet.sequence_number, packet.data);
 }
 
+void send_packet_list(int sock, const struct sockaddr_in6* multicast_addr, Packet* packets, int packet_count) {
+    for (int i = 0; i < packet_count; i++) {
+        if (i == packet_count - 1) {
+            packets[i].is_end = 1;
+        }
+        send_one_packet(sock, multicast_addr, packets[i]);
+    }
+}
 
+int read_file(const char* filename, Packet** packets_out) {
+    //open file
+    FILE* file = fopen(filename, "r");
+    if (file == NULL) {
+        perror("Fehler beim Öffnen der Datei");
+        exit(EXIT_FAILURE);
+    }
+
+    int counter = 0;
+    int max_packet = 10;
+
+    //make paketlist 
+    Packet* packets = malloc(max_packet * sizeof(Packet));
+    if (packets == NULL) {
+        perror("Fehler beim Allokieren von Speicher für die Paketliste.");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+
+    //reading each line of the file
+    char line[MAX_LINE_LEN];
+    while (fgets(line, MAX_LINE_LEN, file) != NULL) {
+        char* newline_pos = strchr(line, '\n');
+        if (newline_pos) {
+            *newline_pos = '\0';
+        }
+        //maximum size reached
+        if (counter == max_packet) {
+            printf("Maximale Anzahl von Paketen erreicht.");
+            break;
+        }
+
+        // Parse line in correct format: "<seqnr>|<data>")
+        packets[counter].sequence_number = counter; // automatic sequenznumber
+        strncpy(packets[counter].data, line, MAX_LINE_LEN - 1); 
+        packets[counter].data[MAX_LINE_LEN - 1] = '\0'; 
+
+        printf("Gelesene Zeile: seq=%d, data=%s\n", packets[counter].sequence_number, packets[counter].data);
+
+        counter++;
+    }
+    fclose(file);
+
+    *packets_out = packets;
+    return counter;
+}
 
 
 
@@ -101,7 +127,7 @@ void send_hello_message(int sock, const struct sockaddr_in6* multicast_addr) {
 
 int main(int argc, char* argv[]) {
     if (argc < 4) {
-        fprintf(stderr, "Usage: %s <multicast_address> <port> <interface>\n", argv[0]);
+        fprintf(stderr, "Nutzung: %s <multicast_address> <port> <interface>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
@@ -109,23 +135,17 @@ int main(int argc, char* argv[]) {
     int port = atoi(argv[2]);
     const char* interface_name = argv[3];
 
-    int sock = create_socket(multicast_address, port, interface_name);
-
     struct sockaddr_in6 multicast_addr;
-    memset(&multicast_addr, 0, sizeof(multicast_addr));
-    multicast_addr.sin6_family = AF_INET6;
-    multicast_addr.sin6_port = htons(port);
+    int sock = create_socket(multicast_address, port, interface_name, &multicast_addr);
 
-    if (inet_pton(AF_INET6, multicast_address, &multicast_addr.sin6_addr) != 1) {
-        die("Invalid multicast address");
-    }
-    multicast_addr.sin6_scope_id = if_nametoindex(interface_name);
+    Packet hello_packet = {0, 0, "Hello"};
+    send_one_packet(sock, &multicast_addr, hello_packet);
 
-    send_hello_message(sock, &multicast_addr);
+    Packet *packetlist = NULL;
+    int packet_count = read_file("pakete.txt", &packetlist);
+    send_packet_list(sock, &multicast_addr, packetlist, packet_count);
 
-
-
-    printf("Sender completed successfully.\n");
+    printf("Client beendet\n");
     close(sock);
     return 0;
 }
