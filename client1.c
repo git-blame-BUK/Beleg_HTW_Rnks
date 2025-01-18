@@ -94,7 +94,9 @@ void send_packet_list(int sock, const struct sockaddr_in6* multicast_addr, Packe
     struct sockaddr_in6 sender_addr;
     socklen_t sender_len = sizeof(sender_addr);
 
-    struct timeval timeout = {0, 300000}; // 300 milliseconds
+    struct timeval timeout;
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 300000; // 300 milliseconds
 
     fd_set read_fds;
 
@@ -114,23 +116,29 @@ void send_packet_list(int sock, const struct sockaddr_in6* multicast_addr, Packe
         FD_ZERO(&read_fds);
         FD_SET(sock, &read_fds);
 
-        int activity = select(sock + 1, &read_fds, NULL, NULL, &timeout);
-        if (activity < 0) {
-            perror("select Fehler");
-            exit(EXIT_FAILURE);
-        }
-        if (activity == 0) {
-            printf("Timeout\n");
-        }
-        if (activity > 0) {
-            if (FD_ISSET(sock, &read_fds)) {
-                nack = receive_nack(sock, &sender_addr, &sender_len);
-                if (nack.sequence_number != -1) {
-                    printf("NACK empfangen: seq=%d, Timestamp=%d\n", nack.sequence_number, nack.Timestamp);
-                    send_one_packet(sock, multicast_addr, packets[nack.sequence_number]);
-                    i = nack.sequence_number - 1;
+        int activity;
+        while (1) {
+            activity = select(sock + 1, &read_fds, NULL, NULL, &timeout);
+            if (activity < 0) {
+                perror("select Fehler");
+                exit(EXIT_FAILURE);
+            }
+            if (activity == 0) {
+                printf("Timeout\n");
+                break;
+            }
+            if (activity > 0) {
+                if (FD_ISSET(sock, &read_fds)) {
+                    nack = receive_nack(sock, &sender_addr, &sender_len);
+                    if (nack.sequence_number != -1) {
+                        printf("NACK empfangen: seq=%d, Timestamp=%d\n", nack.sequence_number, nack.Timestamp);
+                        send_one_packet(sock, multicast_addr, packets[nack.sequence_number]);
+                    }
                 }
             }
+            // Timeout reseten falls NACK empfangen wurde
+            timeout.tv_sec = 0;
+            timeout.tv_usec = 300000; // 300 milliseconds
         }
     }
 }
@@ -206,7 +214,7 @@ int main(int argc, char* argv[]) {
 
     //Hallo-Paket senden
     Packet hello_packet = {-1, 0, "Hello"};
-    send_one_packet(sock, &multicast_addr, hello_packet);
+    //send_one_packet(sock, &multicast_addr, hello_packet);
 
     //Paketliste aus Datei lesen
     Packet *packetlist = NULL;

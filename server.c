@@ -105,6 +105,44 @@ int receive_one_packet(int sock, Packet* packet, struct sockaddr_in6* sender_add
     return packet->is_end;
 }
 
+void get_missing_packets(Packet* packets, int sequence_number, int sock, struct sockaddr_in6 sender_addr, socklen_t sender_len) {
+    int missing_packet;
+    Packet packet;
+
+    while (1) {
+        missing_packet = -1;
+        for (int i = 0; i < sequence_number; i++) {
+            if (packets[i].sequence_number != i) {
+                missing_packet = i;
+                break;
+            }
+        }
+
+        if (missing_packet == -1) {
+            break; // No missing packets found
+        }
+
+        send_nack(sock, &sender_addr, missing_packet, packets[missing_packet].timestamp);
+        int is_end = receive_one_packet(sock, &packet, &sender_addr, &sender_len);
+        packets[packet.sequence_number] = packet;
+
+        if (is_end == 1) {
+            break; // End of transmission
+        }
+    }
+}
+
+int get_packet_count(Packet* packets) {
+    int packet_count = 0;
+    for (int i = 0; i < MAX_PACKETS; i++) {
+        if (packets[i].sequence_number == i) {
+            packet_count++;
+        }
+    }
+    return packet_count;
+}
+
+
 Packet* receiver_main(int sock) {
     int packet_count = 0;
 
@@ -113,27 +151,24 @@ Packet* receiver_main(int sock) {
         printf("Speicher konnte nicht allokiert werden\n");
         exit(EXIT_FAILURE);
     }
+    Packet packet;
 
     while (1) {
         // Senderadresse Struktur initialisieren
         struct sockaddr_in6 sender_addr;
         socklen_t sender_len = sizeof(sender_addr);
 
+
         // Paket empfangen, Senderadresse wird in sender_addr gespeichert
-        int is_end = receive_one_packet(sock, &packets[packet_count], &sender_addr, &sender_len);      
-        if (strcmp(packets[packet_count].data, "Hello") == 0) {
+        int is_end = receive_one_packet(sock, &packet, &sender_addr, &sender_len);     
+        if (strcmp(packets[packet.sequence_number].data, "Hello") == 0) {
             printf("Hallo empfangen.\n");
             continue;
         }
-        
-        if (packet_count != packets[packet_count].sequence_number) {
-            printf("Fehlerhafte Sequenznummer\n");
-            send_nack(sock, &sender_addr, packet_count, packets[packet_count].timestamp);
-            int is_end = receive_one_packet(sock, &packets[packet_count], &sender_addr, &sender_len);
-        }
-        
+        packets[packet.sequence_number] = packet;
+        get_missing_packets(packets, packet.sequence_number, sock, sender_addr, sender_len); 
 
-        packet_count++;
+        packet_count = get_packet_count(packets);
 
         if (is_end == 1) {
             printf("Ende der Übertragung erreicht.\n");
