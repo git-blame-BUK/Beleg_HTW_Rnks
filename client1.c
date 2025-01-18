@@ -9,10 +9,12 @@
 
 // Benötigt für IPV6_JOIN_GROUP
 #include <net/if.h>
+#include <time.h>
 
 #include <errno.h>
 
 #include "packet.h"
+#include "nack.h"
 
 int create_socket(const char* multicast_address, int port, const char* interface_name, struct sockaddr_in6* multicast_addr) {
     //Socketinstanz erstellen
@@ -65,21 +67,71 @@ int create_socket(const char* multicast_address, int port, const char* interface
     return sock;
 }
 
+NACK receive_nack(int sock, struct sockaddr_in6* sender_addr, socklen_t* sender_len) {
+    NACK nack = {-1, -1};
+    int len = recvfrom(sock, &nack, sizeof(nack), 0, (struct sockaddr*)sender_addr, sender_len);
+    if (len < 0) {
+        printf("Paket konnte nicht empfangen werden\n");
+        return nack;
+    }
+
+    printf("NACK empfangen: seq=%d, Timestamp=%d\n", nack.sequence_number, nack.Timestamp);
+    return nack;
+}
+
 void send_one_packet(int sock, const struct sockaddr_in6* multicast_addr, Packet packet) {
+    packet.timestamp = time(NULL);
     //Paket senden
     if (sendto(sock, &packet, sizeof(packet), 0, (struct sockaddr*)multicast_addr, sizeof(*multicast_addr)) < 0) {
         printf("Paket konnte nicht gesendet werden\n");
     }
 
-    printf("Paket mit Sequenznummer %d und Daten: %s gesendet\n", packet.sequence_number, packet.data);
+    printf("Paket mit Sequenznummer %d und Daten: %s gesendet. Timestamp: %d\n", packet.sequence_number, packet.data, packet.timestamp);
 }
 
 void send_packet_list(int sock, const struct sockaddr_in6* multicast_addr, Packet* packets, int packet_count) {
+    NACK nack;
+    struct sockaddr_in6 sender_addr;
+    socklen_t sender_len = sizeof(sender_addr);
+
+    struct timeval timeout = {0, 300000}; // 300 milliseconds
+
+    fd_set read_fds;
+
     for (int i = 0; i < packet_count; i++) {
         if (i == packet_count - 1) {
             packets[i].is_end = 1;
         }
+        //Fehler simulieren
+        if (i == 2) {
+            continue;
+        }
+        if (i == 3) {
+            continue;
+        }
         send_one_packet(sock, multicast_addr, packets[i]);
+
+        FD_ZERO(&read_fds);
+        FD_SET(sock, &read_fds);
+
+        int activity = select(sock + 1, &read_fds, NULL, NULL, &timeout);
+        if (activity < 0) {
+            perror("select Fehler");
+            exit(EXIT_FAILURE);
+        }
+        if (activity == 0) {
+            printf("Timeout\n");
+        }
+        if (activity > 0) {
+            if (FD_ISSET(sock, &read_fds)) {
+                nack = receive_nack(sock, &sender_addr, &sender_len);
+                if (nack.sequence_number != -1) {
+                    printf("NACK empfangen: seq=%d, Timestamp=%d\n", nack.sequence_number, nack.Timestamp);
+                    send_one_packet(sock, multicast_addr, packets[nack.sequence_number]);
+                    i = nack.sequence_number - 1;
+                }
+            }
+        }
     }
 }
 
@@ -92,10 +144,9 @@ int read_file(const char* filename, Packet** packets_out) {
     }
 
     int counter = 0;
-    int max_packet = 10;
 
     //Paketliste erstellen 
-    Packet* packets = malloc(max_packet * sizeof(Packet));
+    Packet* packets = malloc(MAX_PACKETS * sizeof(Packet));
     if (packets == NULL) {
         perror("Fehler beim Allokieren von Speicher für die Paketliste.");
         fclose(file);
@@ -110,7 +161,7 @@ int read_file(const char* filename, Packet** packets_out) {
             *newline_pos = '\0';
         }
         //Maximale Anzahl von Paketen erreicht
-        if (counter == max_packet) {
+        if (counter == MAX_PACKETS) {
             printf("Maximale Anzahl von Paketen erreicht.");
             break;
         }
@@ -119,7 +170,8 @@ int read_file(const char* filename, Packet** packets_out) {
         packets[counter].sequence_number = counter; // automatic sequenznumber
         strncpy(packets[counter].data, line, MAX_LINE_LEN - 1); 
         packets[counter].data[MAX_LINE_LEN - 1] = '\0';
-        packets[counter].is_end = 0; 
+        packets[counter].is_end = 0;
+        packets[counter].timestamp = -1; 
 
         printf("Gelesene Zeile: seq=%d, data=%s\n", packets[counter].sequence_number, packets[counter].data);
 
@@ -153,7 +205,7 @@ int main(int argc, char* argv[]) {
     int sock = create_socket(multicast_address, port, interface_name, &multicast_addr);
 
     //Hallo-Paket senden
-    Packet hello_packet = {0, 0, "Hello"};
+    Packet hello_packet = {-1, 0, "Hello"};
     send_one_packet(sock, &multicast_addr, hello_packet);
 
     //Paketliste aus Datei lesen

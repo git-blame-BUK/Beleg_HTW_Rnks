@@ -13,6 +13,7 @@
 #include <errno.h>
 
 #include "packet.h"
+# include "nack.h"
 
 
 int create_socket(const char* multicast_address, int port, const char* interface_name) {
@@ -79,44 +80,84 @@ int create_socket(const char* multicast_address, int port, const char* interface
     return sock;
 }
 
-void receiver_main(int sock, const char* output_file) {
-    //Datei erstellen
+void send_nack(int sock, const struct sockaddr_in6* sender_addr, int sequence_number, int timestamp) {
+    NACK nack = {sequence_number, timestamp};
+    if (sendto(sock, &nack, sizeof(nack), 0, (struct sockaddr*)sender_addr, sizeof(*sender_addr)) < 0) {
+     printf("Paket konnte nicht gesendet werden\n");
+    }
+    printf("Nack für Sequenznummer %d mit Timestamp: %d gesendet\n", nack.sequence_number, nack.Timestamp);
+}
+
+int receive_one_packet(int sock, Packet* packet, struct sockaddr_in6* sender_addr, socklen_t* sender_len) {
+    int len = recvfrom(sock, packet, sizeof(Packet), 0, (struct sockaddr*)sender_addr, sender_len);
+    if (len < 0) {
+        printf("Paket konnte nicht empfangen werden\n");
+        return -1;
+    }
+
+    int sequence_number = packet->sequence_number;
+    char* data = packet->data;
+    int timestamp = packet->timestamp;
+
+
+
+    printf("Paket empfangen: seq=%d, data=%s, Timestamp=%d\n", sequence_number, data, timestamp);
+    return packet->is_end;
+}
+
+Packet* receiver_main(int sock) {
+    int packet_count = 0;
+
+    Packet* packets = (Packet*)malloc(MAX_PACKETS * sizeof(Packet));
+    if (!packets) {
+        printf("Speicher konnte nicht allokiert werden\n");
+        exit(EXIT_FAILURE);
+    }
+
+    while (1) {
+        // Senderadresse Struktur initialisieren
+        struct sockaddr_in6 sender_addr;
+        socklen_t sender_len = sizeof(sender_addr);
+
+        // Paket empfangen, Senderadresse wird in sender_addr gespeichert
+        int is_end = receive_one_packet(sock, &packets[packet_count], &sender_addr, &sender_len);      
+        if (strcmp(packets[packet_count].data, "Hello") == 0) {
+            printf("Hallo empfangen.\n");
+            continue;
+        }
+        
+        if (packet_count != packets[packet_count].sequence_number) {
+            printf("Fehlerhafte Sequenznummer\n");
+            send_nack(sock, &sender_addr, packet_count, packets[packet_count].timestamp);
+            int is_end = receive_one_packet(sock, &packets[packet_count], &sender_addr, &sender_len);
+        }
+        
+
+        packet_count++;
+
+        if (is_end == 1) {
+            printf("Ende der Übertragung erreicht.\n");
+            break;
+        }
+        if (packet_count == MAX_PACKETS) {
+            printf("Maximale Anzahl an Paketen erreicht\n");
+            break;
+        }
+    }
+
+    return packets;
+}
+
+void write_packets_to_file(const char* output_file, Packet* packets) {
     FILE* file = fopen(output_file, "w");
-    if (!file){
+    if (!file) {
         printf("Datei konnte nicht geöffnet werden\n");
         exit(EXIT_FAILURE);
     }
 
-    Packet packet;
-    while (1) {
-        //Senderadresse Stuktur initialisieren
-        struct sockaddr_in6 sender_addr;
-        socklen_t sender_len = sizeof(sender_addr);
-
-        //Paket empfangen, Senderadresse wird in sender_addr gespeichert
-        int len = recvfrom(sock, &packet, sizeof(packet), 0, (struct sockaddr*)&sender_addr, &sender_len);
-        if (len < 0) {
-            printf("Paket konnte nicht empfangen werden\n");
-            exit(EXIT_FAILURE);
-        }
-
-        int is_end = packet.is_end;
-        int sequence_number = packet.sequence_number;
-        char* data = packet.data;
-
-        if (strcmp(data, "Hello") == 0) {
-            printf("Hallo empfangen.\n");
-            continue;
-        }
-
-        //Paket in Datei schreiben
-        fprintf(file, "%s", packet.data);
-        fprintf(file, "\n");
-        
-        printf("Paket empfangen: seq=%d, data=%s\n", sequence_number, data);
-
-        if (is_end == 1) {
-            printf("Ende der Übertragung erreicht.\n");
+    for (int i = 0; i < MAX_PACKETS; i++) {
+        fprintf(file, "%s\n", packets[i].data);
+        if (packets[i].is_end == 1) {
             break;
         }
     }
@@ -136,7 +177,9 @@ int main(int argc, char* argv[]) {
     const char* output_file = argv[4];
 
     int sock = create_socket(multicast_address, port, interface_name);
-    receiver_main(sock, output_file);
+
+    Packet* packets = receiver_main(sock);
+    write_packets_to_file(output_file, packets);
 
     printf("Receiver beendet\n");
     close(sock);
