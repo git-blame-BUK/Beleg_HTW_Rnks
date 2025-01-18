@@ -4,8 +4,7 @@
 #define MAX_LINE_LEN 1024
 
 typedef struct {
-    int Seqnr;
-    int sender_Adresse;
+    int sequence_number;
     int Timestamp;
 } NACK;
 
