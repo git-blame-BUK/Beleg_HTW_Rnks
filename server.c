@@ -142,13 +142,60 @@ int get_packet_count(Packet* packets) {
     return packet_count;
 }
 
+void send_one_packet(int sock, const struct sockaddr_in6* multicast_addr, Packet packet) {
+    packet.timestamp = time(NULL);
+    //Paket senden
+    if (sendto(sock, &packet, sizeof(packet), 0, (struct sockaddr*)multicast_addr, sizeof(*multicast_addr)) < 0) {
+        printf("Paket konnte nicht gesendet werden\n");
+    }
+
+    printf("Paket mit Sequenznummer %d und Daten: %s gesendet. Timestamp: %d\n", packet.sequence_number, packet.data, packet.timestamp);
+}
 
 void send_hello_ack(int sock, const struct sockaddr_in6* sender_addr) {
     Packet packet = {-1, 0, "Hello ack", time(NULL)};
-    if (sendto(sock, &packet, sizeof(packet), 0, (struct sockaddr*)sender_addr, sizeof(*sender_addr)) < 0) {
-        printf("Paket konnte nicht gesendet werden\n");
-    }
+    send_one_packet(sock, sender_addr, packet);
     printf("Hallo ack gesendet \n");
+}
+
+void wait_for_hello(int sock, struct sockaddr_in6* sender_addr, socklen_t* sender_len) {
+    Packet packet;
+
+    while (1) {
+        int len = recvfrom(sock, &packet, sizeof(packet), 0, (struct sockaddr*)sender_addr, sender_len);
+        if (len < 0) {
+            printf("Paket konnte nicht empfangen werden\n");
+            continue;
+        }
+
+        if (strcmp(packet.data, "Hello") == 0) {
+            printf("Hallo empfangen.\n");
+            break;
+        }
+    }
+}
+
+void send_close(int sock, const struct sockaddr_in6* sender_addr) {
+    Packet packet = {-1, 1, "Close", time(NULL)};
+    send_one_packet(sock, sender_addr, packet);
+    printf("Close gesendet \n");
+}
+
+void wait_for_close(int sock, struct sockaddr_in6* sender_addr, socklen_t* sender_len) {
+    Packet packet;
+
+    while (1) {
+        int len = recvfrom(sock, &packet, sizeof(packet), 0, (struct sockaddr*)sender_addr, sender_len);
+        if (len < 0) {
+            printf("Paket konnte nicht empfangen werden\n");
+            continue;
+        }
+
+        if (strcmp(packet.data, "Close Ack") == 0) {
+            printf("Close ack empfangen\n");
+            break;
+        }
+    }
 }
 
 Packet* receiver_main(int sock) {
@@ -161,15 +208,17 @@ Packet* receiver_main(int sock) {
     }
     Packet packet;
 
+    // Senderadresse Struktur initialisieren
+    struct sockaddr_in6 sender_addr;
+    socklen_t sender_len = sizeof(sender_addr);
+
+    wait_for_hello(sock, &sender_addr, &sender_len);
+    send_hello_ack(sock, &sender_addr);
+
     while (1) {
-        // Senderadresse Struktur initialisieren
-        struct sockaddr_in6 sender_addr;
-        socklen_t sender_len = sizeof(sender_addr);
-
-
         // Paket empfangen, Senderadresse wird in sender_addr gespeichert
         int is_end = receive_one_packet(sock, &packet, &sender_addr, &sender_len);     
-        if (strcmp(packets[packet.sequence_number].data, "Hello") == 0) {
+        if (strcmp(packet.data, "Hello") == 0) {
             printf("Hallo empfangen.\n");
             // Hallo ack senden
             send_hello_ack(sock, &sender_addr);
@@ -189,6 +238,10 @@ Packet* receiver_main(int sock) {
             break;
         }
     }
+
+    usleep(300 * 1000); // 300 ms
+    send_close(sock, &sender_addr);
+    wait_for_close(sock, &sender_addr, &sender_len);
 
     return packets;
 }

@@ -89,7 +89,7 @@ void send_one_packet(int sock, const struct sockaddr_in6* multicast_addr, Packet
     printf("Paket mit Sequenznummer %d und Daten: %s gesendet. Timestamp: %d\n", packet.sequence_number, packet.data, packet.timestamp);
 }
 
-void send_packet_list(int sock, const struct sockaddr_in6* multicast_addr, Packet* packets, int packet_count) {
+void send_packet_list(int sock, const struct sockaddr_in6* multicast_addr, Packet* packets, int packet_count, int error) {
     NACK nack;
     struct sockaddr_in6 sender_addr;
     socklen_t sender_len = sizeof(sender_addr);
@@ -104,13 +104,15 @@ void send_packet_list(int sock, const struct sockaddr_in6* multicast_addr, Packe
         if (i == packet_count - 1) {
             packets[i].is_end = 1;
         }
-        //Fehler simulieren
-        if (i == 2) {
-            continue;
-        }
-        if (i == 3) {
-            continue;
-        }
+        if (error == 1){
+            //Fehler simulieren
+            if (i == 2) {
+                continue;
+            }
+            if (i == 3) {
+                continue;
+            }
+        }    
         send_one_packet(sock, multicast_addr, packets[i]);
 
         FD_ZERO(&read_fds);
@@ -143,11 +145,13 @@ void send_packet_list(int sock, const struct sockaddr_in6* multicast_addr, Packe
     }
 }
 
-void wait_for_hello_back(int sock, struct sockaddr_in6* multicast_addr) {
+void wait_for_hello_back(int sock, struct sockaddr_in6* multicast_addr, int receiver_count) {
     Packet packet;
     struct sockaddr_in6 sender_addr;
     
     socklen_t sender_len = sizeof(sender_addr);
+
+    int hallo_count = 0;
 
     while (1) {
         int len = recvfrom(sock, &packet, sizeof(packet), 0, (struct sockaddr*)&sender_addr, &sender_len);
@@ -158,6 +162,34 @@ void wait_for_hello_back(int sock, struct sockaddr_in6* multicast_addr) {
 
         if (strcmp(packet.data, "Hello ack") == 0) {
             printf("Hallo ack empfangen\n");
+            hallo_count++;
+        }
+        if (hallo_count == receiver_count) {
+            break;
+        }
+    }
+}
+
+void wait_for_close(int sock, struct sockaddr_in6* multicast_addr, int receiver_count) {
+    Packet packet;
+    struct sockaddr_in6 sender_addr;
+    
+    socklen_t sender_len = sizeof(sender_addr);
+
+    int close_count = 0;
+
+    while (1) {
+        int len = recvfrom(sock, &packet, sizeof(packet), 0, (struct sockaddr*)&sender_addr, &sender_len);
+        if (len < 0) {
+            printf("Paket konnte nicht empfangen werden\n");
+            continue;
+        }
+
+        if (strcmp(packet.data, "Close") == 0) {
+            printf("CLose empfangen\n");
+            close_count++;
+        }
+        if (close_count == receiver_count) {
             break;
         }
     }
@@ -216,16 +248,27 @@ int read_file(const char* filename, Packet** packets_out) {
 
 
 int main(int argc, char* argv[]) {
-    if (argc < 5) {
-        fprintf(stderr, "Nutzung: %s <multicast_address> <port> <interface> <input_file>\n", argv[0]);
+    if (argc < 8) {
+        //Kommando für die Nutzung des Programms ohne simulierten Fehler
+        //./client1 ff02::1 12345 lo0 pakete.txt 2 0 3
+
+        //Kommando für die Nutzung des Programms mit simulierten Fehler
+        //./client1 ff02::1 12345 lo0 pakete.txt 2 1 3
+
+        fprintf(stderr, "Nutzung: %s <multicast_address> <port> <interface> <input_file> <Anzahl Receiver> <Fehlerfall simulieren> <Fenstergröße>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
+
+    printf("Fenstergröße erscheint zum nächsten release\n");
 
     //Parameter einlesen
     const char* multicast_address = argv[1];
     int port = atoi(argv[2]);
     const char* interface_name = argv[3];
     const char* input_file = argv[4];
+    int receiver_count = atoi(argv[5]);
+    int error = atoi(argv[6]);
+    int window_size = atoi(argv[7]);
 
     //Socketadresse erstellen
     struct sockaddr_in6 multicast_addr;
@@ -235,14 +278,20 @@ int main(int argc, char* argv[]) {
     //Hallo-Paket senden
     Packet hello_packet = {-1, 0, "Hello"};
     send_one_packet(sock, &multicast_addr, hello_packet);
-    wait_for_hello_back(sock, &multicast_addr);
+    wait_for_hello_back(sock, &multicast_addr, receiver_count);
 
     //Paketliste aus Datei lesen
     Packet *packetlist = NULL;
     int packet_count = read_file(input_file, &packetlist);
 
     //Paketliste senden
-    send_packet_list(sock, &multicast_addr, packetlist, packet_count);
+    send_packet_list(sock, &multicast_addr, packetlist, packet_count, error);
+
+    wait_for_close(sock, &multicast_addr, receiver_count);
+    usleep(300 * 1000); // 300 ms
+    Packet end_packet = {-1, 1, "Close Ack"};
+    send_one_packet(sock, &multicast_addr, end_packet);
+
 
     printf("Client beendet\n");
     close(sock);
