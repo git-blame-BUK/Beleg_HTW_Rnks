@@ -143,6 +143,26 @@ void send_packet_list(int sock, const struct sockaddr_in6* multicast_addr, Packe
     }
 }
 
+void wait_for_hello_back(int sock, struct sockaddr_in6* multicast_addr) {
+    Packet packet;
+    struct sockaddr_in6 sender_addr;
+    
+    socklen_t sender_len = sizeof(sender_addr);
+
+    while (1) {
+        int len = recvfrom(sock, &packet, sizeof(packet), 0, (struct sockaddr*)&sender_addr, &sender_len);
+        if (len < 0) {
+            printf("Paket konnte nicht empfangen werden\n");
+            continue;
+        }
+
+        if (strcmp(packet.data, "Hello ack") == 0) {
+            printf("Hallo ack empfangen\n");
+            break;
+        }
+    }
+}
+
 int read_file(const char* filename, Packet** packets_out) {
     //Datei öffnen
     FILE* file = fopen(filename, "r");
@@ -214,7 +234,8 @@ int main(int argc, char* argv[]) {
 
     //Hallo-Paket senden
     Packet hello_packet = {-1, 0, "Hello"};
-    //send_one_packet(sock, &multicast_addr, hello_packet);
+    send_one_packet(sock, &multicast_addr, hello_packet);
+    wait_for_hello_back(sock, &multicast_addr);
 
     //Paketliste aus Datei lesen
     Packet *packetlist = NULL;

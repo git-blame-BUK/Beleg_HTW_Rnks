@@ -143,6 +143,14 @@ int get_packet_count(Packet* packets) {
 }
 
 
+void send_hello_ack(int sock, const struct sockaddr_in6* sender_addr) {
+    Packet packet = {-1, 0, "Hello ack", time(NULL)};
+    if (sendto(sock, &packet, sizeof(packet), 0, (struct sockaddr*)sender_addr, sizeof(*sender_addr)) < 0) {
+        printf("Paket konnte nicht gesendet werden\n");
+    }
+    printf("Hallo ack gesendet \n");
+}
+
 Packet* receiver_main(int sock) {
     int packet_count = 0;
 
@@ -163,6 +171,8 @@ Packet* receiver_main(int sock) {
         int is_end = receive_one_packet(sock, &packet, &sender_addr, &sender_len);     
         if (strcmp(packets[packet.sequence_number].data, "Hello") == 0) {
             printf("Hallo empfangen.\n");
+            // Hallo ack senden
+            send_hello_ack(sock, &sender_addr);
             continue;
         }
         packets[packet.sequence_number] = packet;
