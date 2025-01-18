@@ -13,6 +13,8 @@
 // Benötigt für Fehlerbehandlung
 #include <errno.h>
 
+#include <time.h>
+
 #include "packet.h"
 # include "nack.h"
 
